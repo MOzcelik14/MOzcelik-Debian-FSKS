@@ -100,13 +100,13 @@ echo "=============================="
 echo "== Winetricks Kurulumları =="
 echo "=============================="
 
-winetricks -q dotnet40 dotnet45 dotnet48 vcrun2022 vcrun6sp6 corefonts
+winetricks -q dotnet40 dotnet45 dotnet48 vcrun2022 vcrun6sp6 allfonts
 
 echo "=============================="
 echo "== DXVK (FL için gerekli) =="
 echo "=============================="
 
-winetricks dxvk
+winetricks dxvk2030
 
 echo "==> zRAM, Swap ve Swappiness ayarlanıyor..."
 
