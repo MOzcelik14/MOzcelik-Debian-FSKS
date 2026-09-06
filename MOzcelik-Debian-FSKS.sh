@@ -8,12 +8,30 @@ set -Eeuo pipefail
 
 if [[ $EUID -eq 0 ]]; then
     echo "❌ Script root olarak çalıştırılmamalıdır."
-    echo "Normal kullanıcı olarak çalıştırın."
     exit 1
 fi
 
-if [[ ! -f /etc/debian_version ]]; then
-    echo "❌ Bu script Debian içindir."
+# ------------------------------------------------------------
+# Sistem bilgileri
+# ------------------------------------------------------------
+
+if [[ ! -f /etc/os-release ]]; then
+    echo "❌ /etc/os-release bulunamadı."
+    exit 1
+fi
+
+source /etc/os-release
+
+if [[ "${ID:-}" != "debian" ]]; then
+    echo "❌ Bu script yalnızca Debian içindir."
+    echo "Algılanan sistem: ${PRETTY_NAME:-unknown}"
+    exit 1
+fi
+
+DEBIAN_CODENAME="${VERSION_CODENAME:-}"
+
+if [[ -z "$DEBIAN_CODENAME" ]]; then
+    echo "❌ Debian codename algılanamadı."
     exit 1
 fi
 
@@ -25,69 +43,53 @@ if [[ -z "$REAL_HOME" || ! -d "$REAL_HOME" ]]; then
     exit 1
 fi
 
-source /etc/os-release
-
-if [[ "${ID:-}" != "debian" ]]; then
-    echo "❌ Bu sistem Debian değil: ${ID:-bilinmiyor}"
-    exit 1
-fi
-
-DEBIAN_VERSION="${VERSION_ID:-unknown}"
-DEBIAN_CODENAME="${VERSION_CODENAME:-}"
+case "$DEBIAN_CODENAME" in
+    bullseye)
+        DEBIAN_VERSION="11"
+        HAS_NONFREE_FIRMWARE=0
+        ;;
+    bookworm)
+        DEBIAN_VERSION="12"
+        HAS_NONFREE_FIRMWARE=1
+        ;;
+    trixie)
+        DEBIAN_VERSION="13"
+        HAS_NONFREE_FIRMWARE=1
+        ;;
+    forky)
+        DEBIAN_VERSION="14"
+        HAS_NONFREE_FIRMWARE=1
+        ;;
+    sid|unstable)
+        DEBIAN_VERSION="sid"
+        HAS_NONFREE_FIRMWARE=1
+        ;;
+    *)
+        echo "❌ Desteklenmeyen Debian codename: $DEBIAN_CODENAME"
+        exit 1
+        ;;
+esac
 
 echo
 echo "======================================"
 echo "       MOzcelik Debian FSKS"
 echo "======================================"
 echo
-echo "Debian sürümü : $DEBIAN_VERSION"
-echo "Codename      : ${DEBIAN_CODENAME:-otomatik algılanacak}"
-echo "Kullanıcı     : $REAL_USER"
+echo "Debian       : $DEBIAN_VERSION"
+echo "Codename     : $DEBIAN_CODENAME"
+echo "Kullanıcı    : $REAL_USER"
+echo "Home         : $REAL_HOME"
 echo
-
-# ------------------------------------------------------------
-# Debian sürüm kontrolü
-# ------------------------------------------------------------
-
-case "$DEBIAN_VERSION" in
-    11*)
-        echo "✅ Debian 11 Bullseye algılandı."
-        HAS_NONFREE_FIRMWARE=0
-        ;;
-    12*)
-        echo "✅ Debian 12 Bookworm algılandı."
-        HAS_NONFREE_FIRMWARE=1
-        ;;
-    13*)
-        echo "✅ Debian 13 Trixie algılandı."
-        HAS_NONFREE_FIRMWARE=1
-        ;;
-    14*)
-        echo "✅ Debian 14 Forky algılandı."
-        HAS_NONFREE_FIRMWARE=1
-        ;;
-    *)
-        echo "⚠️ Tanınmayan Debian sürümü: $DEBIAN_VERSION"
-        echo "Script devam edecek fakat bazı paket isimleri farklı olabilir."
-        HAS_NONFREE_FIRMWARE=1
-        ;;
-esac
 
 # ------------------------------------------------------------
 # Yardımcı fonksiyonlar
 # ------------------------------------------------------------
 
-apt_install() {
-    echo
-    echo ">>> apt install: $*"
-    sudo apt install -y "$@"
-}
-
 package_exists() {
     apt-cache show "$1" >/dev/null 2>&1
 }
 
-install_if_available() {
+install_available() {
     local packages=()
 
     for pkg in "$@"; do
@@ -98,7 +100,7 @@ install_if_available() {
         fi
     done
 
-    if ((${#packages[@]})); then
+    if ((${#packages[@]} > 0)); then
         sudo apt install -y "${packages[@]}"
     fi
 }
@@ -107,25 +109,23 @@ install_if_available() {
 # APT kaynakları
 # ------------------------------------------------------------
 
-echo
 echo "======================================"
 echo "== APT REPOLARI"
 echo "======================================"
-
-echo "APT kaynaklarının yedeği alınıyor..."
 
 BACKUP="/etc/apt/sources.backup-$(date +%Y%m%d-%H%M%S)"
 
 sudo mkdir -p "$BACKUP"
 
-[[ -f /etc/apt/sources.list ]] &&
-    sudo cp -a /etc/apt/sources.list "$BACKUP/sources.list"
+if [[ -f /etc/apt/sources.list ]]; then
+    sudo cp -a /etc/apt/sources.list "$BACKUP/"
+fi
 
-if compgen -G "/etc/apt/sources.list.d/*" >/dev/null; then
+if [[ -d /etc/apt/sources.list.d ]]; then
     sudo cp -a /etc/apt/sources.list.d "$BACKUP/"
 fi
 
-echo "Yedek: $BACKUP"
+echo "✅ APT yedeği: $BACKUP"
 
 # ------------------------------------------------------------
 # Eski sources.list formatı
@@ -133,49 +133,92 @@ echo "Yedek: $BACKUP"
 
 if [[ -f /etc/apt/sources.list ]]; then
 
-    sudo sed -i -E \
-        's/^([[:space:]]*deb(-src)?[[:space:]]+[^#]+[[:space:]])main([[:space:]]*.*)$/\1main contrib non-free\4/' \
-        /etc/apt/sources.list
+    sudo python3 - <<PY
+from pathlib import Path
+
+p = Path("/etc/apt/sources.list")
+
+lines = p.read_text().splitlines()
+
+out = []
+
+for line in lines:
+    stripped = line.strip()
+
+    if stripped.startswith(("deb ", "deb-src ")):
+        parts = line.split()
+
+        if len(parts) >= 4:
+            components = parts[3:]
+
+            for component in ("contrib", "non-free"):
+                if component not in components:
+                    components.append(component)
+
+            if $HAS_NONFREE_FIRMWARE:
+                if "non-free-firmware" not in components:
+                    components.append("non-free-firmware")
+
+            line = " ".join(parts[:3] + components)
+
+    out.append(line)
+
+p.write_text("\n".join(out) + "\n")
+PY
 
 fi
 
 # ------------------------------------------------------------
-# .sources deb822 formatı
+# Modern .sources dosyaları
 # ------------------------------------------------------------
 
 for file in /etc/apt/sources.list.d/*.sources; do
 
     [[ -f "$file" ]] || continue
 
-    # Sadece Debian kaynaklarına dokun.
-    if grep -qiE 'URIs?:[[:space:]]*https?://([^[:space:]]+\.)?debian\.org' "$file"; then
+    sudo python3 - "$file" "$HAS_NONFREE_FIRMWARE" <<'PY'
+import sys
+from pathlib import Path
 
-        sudo sed -i -E \
-            '/^[[:space:]]*Components:/ {
-                /(^|[[:space:]])contrib([[:space:]]|$)/! s/$/ contrib/
-                /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/
-            }' "$file"
+path = Path(sys.argv[1])
+firmware = sys.argv[2] == "1"
 
-        if [[ "$HAS_NONFREE_FIRMWARE" -eq 1 ]]; then
-            sudo sed -i -E \
-                '/^[[:space:]]*Components:/ {
-                    /(^|[[:space:]])non-free-firmware([[:space:]]|$)/! s/$/ non-free-firmware/
-                }' "$file"
-        fi
+text = path.read_text()
 
-    fi
+# Sadece Debian kaynaklarına dokun.
+if "deb.debian.org" not in text and \
+   "security.debian.org" not in text:
+    sys.exit(0)
+
+lines = text.splitlines()
+out = []
+
+for line in lines:
+
+    if line.startswith("Components:"):
+        components = line.split()[1:]
+
+        for component in ("contrib", "non-free"):
+            if component not in components:
+                components.append(component)
+
+        if firmware and "non-free-firmware" not in components:
+            components.append("non-free-firmware")
+
+        line = "Components: " + " ".join(components)
+
+    out.append(line)
+
+path.write_text("\n".join(out) + "\n")
+PY
 
 done
 
-# sources.list içindeki firmware bileşeni
-if [[ "$HAS_NONFREE_FIRMWARE" -eq 1 && -f /etc/apt/sources.list ]]; then
-    sudo sed -i -E \
-        's/^([[:space:]]*deb(-src)?[[:space:]]+[^#]+[[:space:]])main([[:space:]]+contrib[[:space:]]+non-free)([[:space:]]*)$/\1main contrib non-free non-free-firmware/' \
-        /etc/apt/sources.list
-fi
+echo "✅ contrib + non-free yapılandırıldı."
 
-echo
-echo "APT güncelleniyor..."
+if [[ "$HAS_NONFREE_FIRMWARE" -eq 1 ]]; then
+    echo "✅ non-free-firmware etkin."
+fi
 
 sudo apt update
 
@@ -184,14 +227,16 @@ sudo apt update
 # ------------------------------------------------------------
 
 echo
-echo "APT bağımlılıkları kontrol ediliyor..."
+echo "======================================"
+echo "== APT SAĞLIK KONTROLÜ"
+echo "======================================"
 
 if ! sudo apt-get check; then
     echo
-    echo "❌ APT şu anda tutarsız."
+    echo "❌ APT bağımlılıkları bozuk."
     echo
-    echo "Önce mevcut APT sorunlarını çözmek gerekiyor."
-    echo "Script güvenlik nedeniyle durduruldu."
+    echo "Script burada durduruldu."
+    echo "Önce APT problemi çözülmeli."
     echo
     exit 1
 fi
@@ -207,20 +252,18 @@ echo "======================================"
 echo "== i386 DESTEĞİ"
 echo "======================================"
 
-if ! dpkg --print-foreign-architectures | grep -qx i386; then
+if dpkg --print-foreign-architectures | grep -qx i386; then
+    echo "✅ i386 zaten aktif."
+else
     sudo dpkg --add-architecture i386
     sudo apt update
-    echo "✅ i386 eklendi."
-else
-    echo "✅ i386 zaten aktif."
-fi
 
-# i386 ekledikten sonra tekrar kontrol
-if ! sudo apt-get check; then
-    echo
-    echo "❌ i386 eklendikten sonra APT bağımlılıkları bozuldu."
-    echo "Kurulum durduruldu."
-    exit 1
+    if ! sudo apt-get check; then
+        echo "❌ i386 eklenince APT bozuldu."
+        exit 1
+    fi
+
+    echo "✅ i386 etkinleştirildi."
 fi
 
 # ------------------------------------------------------------
@@ -232,37 +275,36 @@ echo "======================================"
 echo "== GRUB"
 echo "======================================"
 
-GRUB_FILE="/etc/default/grub"
+GRUB="/etc/default/grub"
 
-if [[ -f "$GRUB_FILE" ]]; then
+if [[ -f "$GRUB" ]]; then
 
-    sudo cp -a "$GRUB_FILE" \
-        "$GRUB_FILE.backup-$(date +%Y%m%d-%H%M%S)"
+    sudo cp -a "$GRUB" "$GRUB.backup-$(date +%Y%m%d-%H%M%S)"
 
-    CURRENT_CMDLINE="$(
-        grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB_FILE" |
-        head -n1 |
-        sed -E 's/^GRUB_CMDLINE_LINUX_DEFAULT="(.*)"$/\1/'
+    CURRENT="$(
+        grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB" |
+        sed -E 's/^GRUB_CMDLINE_LINUX_DEFAULT="(.*)"$/\1/' |
+        head -n1
     )"
 
-    add_grub_param() {
+    add_param() {
         local param="$1"
 
-        if [[ "$CURRENT_CMDLINE" != *"$param"* ]]; then
-            CURRENT_CMDLINE="$CURRENT_CMDLINE $param"
+        if [[ ! " $CURRENT " =~ [[:space:]]"$param"[[:space:]] ]]; then
+            CURRENT="$CURRENT $param"
         fi
     }
 
-    add_grub_param "acpi_backlight=native"
-    add_grub_param "nvme_core.default_ps_max_latency_us=0"
+    add_param "acpi_backlight=native"
+    add_param "nvme_core.default_ps_max_latency_us=0"
 
     sudo sed -i \
-        "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$CURRENT_CMDLINE\"|" \
-        "$GRUB_FILE"
+        "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$CURRENT\"|" \
+        "$GRUB"
 
     sudo update-grub
 
-    echo "✅ GRUB ayarlandı."
+    echo "✅ GRUB parametreleri eklendi."
 
 fi
 
@@ -275,16 +317,14 @@ echo "======================================"
 echo "== NETWORKMANAGER"
 echo "======================================"
 
-if systemctl list-unit-files NetworkManager-wait-online.service \
-    >/dev/null 2>&1; then
+if systemctl list-unit-files \
+    NetworkManager-wait-online.service >/dev/null 2>&1; then
 
     sudo systemctl disable NetworkManager-wait-online.service \
         2>/dev/null || true
 
     echo "✅ NetworkManager-wait-online devre dışı."
 
-else
-    echo "ℹ️ NetworkManager-wait-online bulunamadı."
 fi
 
 # ------------------------------------------------------------
@@ -314,7 +354,7 @@ echo "======================================"
 echo "== TEMEL PAKETLER"
 echo "======================================"
 
-install_if_available \
+install_available \
     numlockx \
     fish \
     audacious \
@@ -335,7 +375,7 @@ echo "======================================"
 if package_exists steam-installer; then
     sudo apt install -y steam-installer
 else
-    echo "⚠️ steam-installer bu Debian sürümünde bulunamadı."
+    echo "⚠️ steam-installer bulunamadı."
 fi
 
 if package_exists wine; then
@@ -344,15 +384,13 @@ else
     echo "⚠️ wine bulunamadı."
 fi
 
-if package_exists wine32:i386; then
-    sudo apt install -y wine32:i386
-elif package_exists wine32; then
+if package_exists wine32; then
     sudo apt install -y wine32
 else
     echo "⚠️ wine32 bulunamadı."
 fi
 
-install_if_available winetricks
+install_available winetricks
 
 # ------------------------------------------------------------
 # NVIDIA
@@ -365,25 +403,21 @@ echo "======================================"
 
 if package_exists nvidia-driver; then
 
-    install_if_available \
+    install_available \
         dkms \
         build-essential
 
-    # Çalışan kernel için headers
     if package_exists "linux-headers-$(uname -r)"; then
         sudo apt install -y "linux-headers-$(uname -r)"
+    elif package_exists linux-headers-amd64; then
+        sudo apt install -y linux-headers-amd64
     else
-        echo "⚠️ Mevcut kernel için exact headers bulunamadı."
-        echo "   Genel headers paketi deneniyor..."
-
-        if package_exists "linux-headers-amd64"; then
-            sudo apt install -y linux-headers-amd64
-        fi
+        echo "⚠️ Kernel headers bulunamadı."
     fi
 
     sudo apt install -y nvidia-driver
 
-    install_if_available \
+    install_available \
         nvidia-settings \
         nvidia-xconfig
 
@@ -399,21 +433,19 @@ EOF
 
     sudo depmod -a
 
-    if modprobe nvidia 2>/dev/null; then
-        echo "✅ NVIDIA kernel modülü yüklendi."
+    if sudo modprobe nvidia 2>/dev/null; then
+        echo "✅ NVIDIA modülü yüklendi."
     else
         echo "⚠️ NVIDIA modülü şu anda yüklenemedi."
-        echo "   Reboot sonrası tekrar denenecek."
     fi
 
     if command -v nvidia-smi >/dev/null 2>&1; then
         nvidia-smi || \
-            echo "⚠️ nvidia-smi şu anda çalışmıyor; reboot gerekebilir."
+            echo "⚠️ nvidia-smi reboot sonrasında çalışabilir."
     fi
 
 else
-    echo "⚠️ nvidia-driver bu Debian sürümünde mevcut değil."
-    echo "   NVIDIA kurulumu atlandı."
+    echo "⚠️ nvidia-driver bulunamadı."
 fi
 
 # ------------------------------------------------------------
@@ -426,18 +458,8 @@ echo "== FISH"
 echo "======================================"
 
 if command -v fish >/dev/null 2>&1; then
-
-    CURRENT_SHELL="$(getent passwd "$REAL_USER" | cut -d: -f7)"
-
-    if [[ "$CURRENT_SHELL" != "/usr/bin/fish" ]]; then
-        sudo chsh -s /usr/bin/fish "$REAL_USER"
-        echo "✅ Fish varsayılan shell yapıldı."
-    else
-        echo "✅ Fish zaten varsayılan shell."
-    fi
-
-else
-    echo "⚠️ Fish kurulmadığı için shell değiştirilmiyor."
+    sudo chsh -s /usr/bin/fish "$REAL_USER"
+    echo "✅ Fish varsayılan shell."
 fi
 
 # ------------------------------------------------------------
@@ -450,12 +472,7 @@ echo "== STARSHIP"
 echo "======================================"
 
 if ! command -v starship >/dev/null 2>&1; then
-
-    echo "Starship kuruluyor..."
-
-    curl -sS https://starship.rs/install.sh |
-        sh -s -- -y
-
+    curl -sS https://starship.rs/install.sh | sh -s -- -y
 else
     echo "✅ Starship zaten kurulu."
 fi
@@ -469,22 +486,20 @@ echo "======================================"
 echo "== FLATPAK"
 echo "======================================"
 
-install_if_available flatpak
+install_available flatpak
 
 if command -v flatpak >/dev/null 2>&1; then
 
-    if ! flatpak remote-list |
-        awk '{print $1}' |
+    if ! flatpak remotes --columns=name |
         grep -qx flathub; then
 
         sudo flatpak remote-add \
             --if-not-exists \
             flathub \
             https://flathub.org/repo/flathub.flatpakrepo
-
     fi
 
-    FLATPAKS=(
+    APPS=(
         org.kde.kdenlive
         org.audacityteam.Audacity
         org.nickvision.tubeconverter
@@ -494,20 +509,21 @@ if command -v flatpak >/dev/null 2>&1; then
         com.heroicgameslauncher.hgl
     )
 
-    for app in "${FLATPAKS[@]}"; do
+    for app in "${APPS[@]}"; do
+
         if flatpak info "$app" >/dev/null 2>&1; then
             echo "✅ $app zaten kurulu."
         else
-            echo "Kuruluyor: $app"
             flatpak install -y flathub "$app" || \
-                echo "⚠️ Kurulamadı: $app"
+                echo "⚠️ $app kurulamadı."
         fi
+
     done
 
 fi
 
 # ------------------------------------------------------------
-# Winetricks bileşenleri
+# Winetricks
 # ------------------------------------------------------------
 
 echo
@@ -520,15 +536,14 @@ if command -v winetricks >/dev/null 2>&1; then
     export WINEPREFIX="$REAL_HOME/.wine"
 
     if [[ ! -d "$WINEPREFIX" ]]; then
-        echo "Wine prefix oluşturuluyor..."
         sudo -u "$REAL_USER" \
-            env HOME="$REAL_HOME" \
+            HOME="$REAL_HOME" \
             WINEPREFIX="$WINEPREFIX" \
             wineboot -u || true
     fi
 
     sudo -u "$REAL_USER" \
-        env HOME="$REAL_HOME" \
+        HOME="$REAL_HOME" \
         WINEPREFIX="$WINEPREFIX" \
         winetricks -q \
         dotnet40 \
@@ -536,17 +551,13 @@ if command -v winetricks >/dev/null 2>&1; then
         dotnet48 \
         vcrun2022 \
         vcrun6sp6 \
-        allfonts || \
-        echo "⚠️ Bazı Winetricks bileşenleri kurulamadı."
+        allfonts || true
 
     sudo -u "$REAL_USER" \
-        env HOME="$REAL_HOME" \
+        HOME="$REAL_HOME" \
         WINEPREFIX="$WINEPREFIX" \
-        winetricks dxvk2030 || \
-        echo "⚠️ DXVK kurulamadı."
+        winetricks dxvk2030 || true
 
-else
-    echo "⚠️ Winetricks kurulu değil."
 fi
 
 # ------------------------------------------------------------
@@ -571,7 +582,7 @@ EOF
     sudo systemctl enable zramswap.service
     sudo systemctl restart zramswap.service
 
-    echo "✅ zRAM yapılandırıldı."
+    echo "✅ zRAM ayarlandı."
 
 else
     echo "⚠️ zram-tools bulunamadı."
@@ -586,12 +597,9 @@ echo "======================================"
 echo "== SWAP"
 echo "======================================"
 
-# Mevcut swapfile varsa SİLME.
-# Yoksa 4 GB oluştur.
 if [[ -f /swapfile ]]; then
 
-    echo "✅ /swapfile zaten mevcut."
-    echo "   Mevcut swapfile korunuyor."
+    echo "✅ Mevcut /swapfile korunuyor."
 
 else
 
@@ -624,8 +632,6 @@ EOF
 
 sudo sysctl --system >/dev/null
 
-echo "✅ vm.swappiness = 4"
-
 # ------------------------------------------------------------
 # Fish config
 # ------------------------------------------------------------
@@ -642,7 +648,6 @@ sudo -u "$REAL_USER" tee \
     "$REAL_HOME/.config/fish/config.fish" >/dev/null <<'EOF'
 if status is-interactive
     echo " "
-    set_color normal
 
     if command -v fastfetch >/dev/null
         fastfetch
@@ -664,8 +669,6 @@ alias fsil='sudo flatpak remove'
 alias kapa='poweroff'
 alias söyle='echo'
 EOF
-
-echo "✅ Fish yapılandırıldı."
 
 # ------------------------------------------------------------
 # Fastfetch
@@ -778,7 +781,7 @@ sudo -u "$REAL_USER" tee \
 EOF
 
 # ------------------------------------------------------------
-# Son kontroller
+# Son kontrol
 # ------------------------------------------------------------
 
 echo
@@ -791,6 +794,10 @@ echo "APT:"
 sudo apt-get check
 
 echo
+echo "Debian:"
+cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION_ID|VERSION_CODENAME)='
+
+echo
 echo "i386:"
 dpkg --print-foreign-architectures
 
@@ -799,11 +806,11 @@ echo "Kernel:"
 uname -r
 
 echo
-echo "RAM / Swap:"
+echo "RAM:"
 free -h
 
 echo
-echo "Aktif swap:"
+echo "Swap:"
 swapon --show
 
 echo
@@ -817,7 +824,7 @@ cat /proc/sys/vm/swappiness
 echo
 echo "NVIDIA:"
 if command -v nvidia-smi >/dev/null 2>&1; then
-    nvidia-smi || echo "⚠️ NVIDIA henüz aktif değil; reboot gerekebilir."
+    nvidia-smi || true
 else
     echo "nvidia-smi bulunamadı."
 fi
@@ -826,11 +833,9 @@ echo
 echo "======================================"
 echo "== TAMAMLANDI =="
 echo "======================================"
-
 echo
-echo "✅ Debian $DEBIAN_VERSION yapılandırması tamamlandı."
+echo "✅ Debian $DEBIAN_VERSION ($DEBIAN_CODENAME) yapılandırıldı."
 echo
-echo "⚠️ NVIDIA/kernel/GRUB değişikliklerinin tamamı için:"
-echo
-echo "    sudo reboot"
+echo "🔄 Önerilen:"
+echo "sudo reboot"
 echo
