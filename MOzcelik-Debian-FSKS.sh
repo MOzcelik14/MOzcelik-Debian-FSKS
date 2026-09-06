@@ -1,1169 +1,860 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# SCRIPT_NAME: post-install.sh
+# SCRIPT_VERSION: 1.0.0
+# Desteklenen dağıtım: Debian 13 (Trixie) — yalnızca bu sürüm
+#
+# Kullanım: normal kullanıcı olarak, sudo ile çalıştırın:
+#   sudo ./post-install.sh
+#
 set -Eeuo pipefail
 
-# ============================================================
-# MOzcelik-Debian-FSKS 2.0
-# Debian 11 Bullseye
-# Debian 12 Bookworm
-# Debian 13 Trixie
-# Debian 14 Forky
-# ============================================================
+# ------------------------------------------------------------------
+# Sabitler
+# ------------------------------------------------------------------
+SCRIPT_NAME="post-install.sh"
+SCRIPT_VERSION="1.0.0"
+SUPPORTED_DEBIAN_CODENAME="trixie"
+SUPPORTED_DEBIAN_VERSION_ID="13"
 
-SCRIPT_NAME="MOzcelik-Debian-FSKS"
-SCRIPT_VERSION="2.0"
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+APT_BACKUP_DIR="/etc/apt/fsks-backup-${TIMESTAMP}"
 
-# ------------------------------------------------------------
-# Renkler
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
+# Renkli log fonksiyonları
+# ------------------------------------------------------------------
+COLOR_CYAN="\033[1;36m"
+COLOR_GREEN="\033[1;32m"
+COLOR_YELLOW="\033[1;33m"
+COLOR_RED="\033[1;31m"
+COLOR_RESET="\033[0m"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-RESET='\033[0m'
+info() { echo -e "${COLOR_CYAN}ℹ️  $*${COLOR_RESET}"; }
+ok()   { echo -e "${COLOR_GREEN}✅ $*${COLOR_RESET}"; }
+warn() { echo -e "${COLOR_YELLOW}⚠️  $*${COLOR_RESET}"; }
+die()  { echo -e "${COLOR_RED}❌ $*${COLOR_RESET}" >&2; exit 1; }
 
-info() {
-    echo -e "${CYAN}==> $*${RESET}"
-}
+trap 'die "Beklenmeyen hata: satır $LINENO. Script durduruldu."' ERR
 
-ok() {
-    echo -e "${GREEN}✅ $*${RESET}"
-}
-
-warn() {
-    echo -e "${YELLOW}⚠️  $*${RESET}"
-}
-
-die() {
-    echo -e "${RED}❌ $*${RESET}"
-    exit 1
-}
-
-# ------------------------------------------------------------
-# Root kontrolü
-# ------------------------------------------------------------
-
-if [[ $EUID -eq 0 ]]; then
-    die "Script'i root olarak çalıştırma. Normal kullanıcıyla çalıştır."
+# ------------------------------------------------------------------
+# Root / sudo kontrolü
+# ------------------------------------------------------------------
+if [[ "${EUID}" -eq 0 && -z "${SUDO_USER:-}" ]]; then
+    die "Bu scripti doğrudan root olarak çalıştırmayın. Normal kullanıcı olarak 'sudo ./${SCRIPT_NAME}' şeklinde çalıştırın."
 fi
 
-# ------------------------------------------------------------
-# Debian kontrolü
-# ------------------------------------------------------------
+if [[ "${EUID}" -ne 0 ]]; then
+    die "Bu script sudo yetkisi gerektiriyor. Lütfen 'sudo ./${SCRIPT_NAME}' ile çalıştırın."
+fi
 
-[[ -f /etc/os-release ]] || die "/etc/os-release bulunamadı."
+if [[ -z "${SUDO_USER:-}" ]]; then
+    die "SUDO_USER değişkeni bulunamadı. Scripti sudo ile normal bir kullanıcı üzerinden çalıştırın."
+fi
 
+REAL_USER="${SUDO_USER}"
+REAL_HOME="$(getent passwd "${REAL_USER}" | cut -d: -f6)"
+if [[ -z "${REAL_HOME}" || ! -d "${REAL_HOME}" ]]; then
+    die "Gerçek kullanıcının (${REAL_USER}) home dizini bulunamadı."
+fi
+
+info "Gerçek kullanıcı: ${REAL_USER}, home: ${REAL_HOME}"
+
+run_as_user() {
+    sudo -u "${REAL_USER}" -H bash -c "$*"
+}
+
+# ------------------------------------------------------------------
+# Debian / sürüm kontrolü
+# ------------------------------------------------------------------
+[[ -f /etc/os-release ]] || die "/etc/os-release bulunamadı, bu sistem Debian değil gibi görünüyor."
+
+# shellcheck disable=SC1091
 source /etc/os-release
 
-[[ "${ID:-}" == "debian" ]] || \
-    die "Bu script yalnızca Debian içindir."
+[[ "${ID:-}" == "debian" ]] || die "Bu script yalnızca Debian üzerinde çalışır. Tespit edilen: ${ID:-bilinmiyor}"
 
 DEBIAN_CODENAME="${VERSION_CODENAME:-}"
+if [[ -z "${DEBIAN_CODENAME}" ]]; then
+    DEBIAN_CODENAME="$(lsb_release -cs 2>/dev/null || true)"
+fi
 
-[[ -n "$DEBIAN_CODENAME" ]] || \
-    die "Debian codename algılanamadı."
+if [[ "${DEBIAN_CODENAME}" != "${SUPPORTED_DEBIAN_CODENAME}" || "${VERSION_ID:-}" != "${SUPPORTED_DEBIAN_VERSION_ID}" ]]; then
+    die "Bu script yalnızca Debian 13 (Trixie) üzerinde çalışır. Tespit edilen: ${PRETTY_NAME:-bilinmiyor} (codename: ${DEBIAN_CODENAME:-bilinmiyor})"
+fi
 
-case "$DEBIAN_CODENAME" in
+ok "Debian 13 (Trixie) tespit edildi, devam ediliyor."
 
-    bullseye)
-        DEBIAN_VERSION="11"
-        NONFREE_FIRMWARE=0
-        ;;
-
-    bookworm)
-        DEBIAN_VERSION="12"
-        NONFREE_FIRMWARE=1
-        ;;
-
-    trixie)
-        DEBIAN_VERSION="13"
-        NONFREE_FIRMWARE=1
-        ;;
-
-    forky)
-        DEBIAN_VERSION="14"
-        NONFREE_FIRMWARE=1
-        ;;
-
-    sid|unstable)
-        DEBIAN_VERSION="sid"
-        NONFREE_FIRMWARE=1
-        ;;
-
-    *)
-        die "Desteklenmeyen Debian sürümü: $DEBIAN_CODENAME"
-        ;;
-
-esac
-
-# ------------------------------------------------------------
-# Kullanıcı
-# ------------------------------------------------------------
-
-REAL_USER="${SUDO_USER:-$USER}"
-REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
-
-[[ -n "$REAL_HOME" && -d "$REAL_HOME" ]] || \
-    die "Kullanıcı home dizini bulunamadı."
-
-# ------------------------------------------------------------
-# Başlangıç
-# ------------------------------------------------------------
-
-clear
-
-echo
-echo "============================================================"
-echo "              $SCRIPT_NAME $SCRIPT_VERSION"
-echo "============================================================"
-echo
-echo "Debian       : $DEBIAN_VERSION"
-echo "Codename     : $DEBIAN_CODENAME"
-echo "Kullanıcı    : $REAL_USER"
-echo "Home         : $REAL_HOME"
-echo
-echo "============================================================"
-echo
-
-# ------------------------------------------------------------
-# Yardımcı paket fonksiyonları
-# ------------------------------------------------------------
-
+# ------------------------------------------------------------------
+# Yardımcı fonksiyonlar
+# ------------------------------------------------------------------
 package_exists() {
     apt-cache show "$1" >/dev/null 2>&1
 }
 
 install_if_available() {
-
-    local packages=()
-
-    for package in "$@"; do
-
-        if package_exists "$package"; then
-            packages+=("$package")
-        else
-            warn "Paket bulunamadı: $package"
+    local pkgs_to_install=()
+    local pkg
+    for pkg in "$@"; do
+        if dpkg -s "${pkg}" >/dev/null 2>&1; then
+            info "Paket zaten kurulu, atlanıyor: ${pkg}"
+            continue
         fi
-
+        if package_exists "${pkg}"; then
+            pkgs_to_install+=("${pkg}")
+        else
+            warn "Paket depoda bulunamadı, atlanıyor: ${pkg}"
+        fi
     done
 
-    if ((${#packages[@]})); then
-        sudo apt install -y "${packages[@]}"
+    if [[ "${#pkgs_to_install[@]}" -gt 0 ]]; then
+        info "Kurulacak paketler: ${pkgs_to_install[*]}"
+        if apt-get install -y "${pkgs_to_install[@]}"; then
+            ok "Kuruldu: ${pkgs_to_install[*]}"
+        else
+            warn "Bazı paketlerin kurulumu başarısız oldu: ${pkgs_to_install[*]}"
+        fi
+    else
+        info "Kurulacak yeni paket yok (${*})."
     fi
 }
 
-# ------------------------------------------------------------
-# APT kaynak yedeği
-# ------------------------------------------------------------
+section() {
+    echo
+    echo -e "${COLOR_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLOR_RESET}"
+    echo -e "${COLOR_CYAN}  $*${COLOR_RESET}"
+    echo -e "${COLOR_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLOR_RESET}"
+}
 
-info "APT kaynakları yedekleniyor..."
+# ==================================================================
+# 1. APT KAYNAK DÜZELTME
+# ==================================================================
+section "1/10 — APT kaynakları düzeltiliyor"
 
-APT_BACKUP="/etc/apt/fsks-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "${APT_BACKUP_DIR}"
+[[ -f /etc/apt/sources.list ]] && cp -a /etc/apt/sources.list "${APT_BACKUP_DIR}/" || true
+if [[ -d /etc/apt/sources.list.d ]]; then
+    mkdir -p "${APT_BACKUP_DIR}/sources.list.d"
+    cp -a /etc/apt/sources.list.d/. "${APT_BACKUP_DIR}/sources.list.d/" 2>/dev/null || true
+fi
+ok "APT kaynakları yedeklendi: ${APT_BACKUP_DIR}"
 
-sudo mkdir -p "$APT_BACKUP"
-
-[[ ! -e /etc/apt/sources.list ]] || \
-    sudo cp -a /etc/apt/sources.list "$APT_BACKUP/"
-
-[[ ! -d /etc/apt/sources.list.d ]] || \
-    sudo cp -a /etc/apt/sources.list.d "$APT_BACKUP/"
-
-ok "APT yedeği oluşturuldu: $APT_BACKUP"
-
-# ------------------------------------------------------------
-# Debian repository codename düzeltme
-# ------------------------------------------------------------
-
-info "Debian repository'leri kontrol ediliyor..."
-
-sudo python3 - "$DEBIAN_CODENAME" "$NONFREE_FIRMWARE" <<'PY'
-import sys
-from pathlib import Path
+info "APT kaynak dosyaları taranıp yanlış/eski suite isimleri düzeltiliyor..."
+CURRENT_CODENAME="${DEBIAN_CODENAME}" python3 - <<'PYEOF'
+import glob
+import os
 import re
 
-codename = sys.argv[1]
-has_firmware = sys.argv[2] == "1"
+codename = os.environ["CURRENT_CODENAME"]
 
-valid_suites = {
-    codename,
-    f"{codename}-updates",
-    f"{codename}-security",
-    f"{codename}-backports",
+# Eski/yanlış suite isimleri -> güncel codename ile değiştirilecek
+BAD_SUITES = {
+    "stable", "testing", "unstable", "sid",
+    "bullseye", "buster", "stretch", "jessie", "wheezy",
+    "bookworm",  # bir önceki stable
 }
 
-def fix_list_file(path):
+HOST_PATTERN = re.compile(r"(deb\.debian\.org|security\.debian\.org)")
 
-    if not path.exists():
-        return
+REQUIRED_COMPONENTS = ["main", "contrib", "non-free", "non-free-firmware"]
 
-    lines = path.read_text().splitlines()
-    output = []
 
-    for line in lines:
+def fix_suite(suite: str) -> str:
+    base = suite
+    suffix = ""
+    for variant in ("-updates", "-security", "-backports"):
+        if suite.endswith(variant):
+            base = suite[: -len(variant)]
+            suffix = variant
+            break
+    if base in BAD_SUITES:
+        return codename + suffix
+    return suite
 
-        stripped = line.strip()
 
-        # Yorumlar
-        if not stripped or stripped.startswith("#"):
-            output.append(line)
+def ensure_components(components: list) -> list:
+    comps = list(components)
+    if not comps:
+        comps = ["main"]
+    if "main" not in comps:
+        comps.insert(0, "main")
+    if "contrib" not in comps:
+        comps.append("contrib")
+    if "non-free" not in comps:
+        comps.append("non-free")
+    if "non-free-firmware" not in comps:
+        comps.append("non-free-firmware")
+    return comps
+
+
+def process_classic_line(line: str) -> str:
+    # deb/deb-src satırlarını işle, satır sonu yorumunu koru
+    stripped = line.rstrip("\n")
+    if not re.match(r"^\s*deb(-src)?\s", stripped):
+        return line
+
+    comment = ""
+    m = re.search(r"(\s+#.*)$", stripped)
+    code_part = stripped
+    if m:
+        comment = m.group(1)
+        code_part = stripped[: m.start()]
+
+    tokens = code_part.split()
+    if len(tokens) < 3:
+        return line
+
+    deb_kw = tokens[0]
+    # options bloğu [ ... ] varsa atla
+    idx = 1
+    opts = ""
+    if tokens[idx].startswith("["):
+        opt_tokens = []
+        while idx < len(tokens) and not tokens[idx].endswith("]"):
+            opt_tokens.append(tokens[idx])
+            idx += 1
+        if idx < len(tokens):
+            opt_tokens.append(tokens[idx])
+            idx += 1
+        opts = " ".join(opt_tokens)
+
+    if idx >= len(tokens):
+        return line
+    url = tokens[idx]
+    idx += 1
+    if idx >= len(tokens):
+        return line
+    suite = tokens[idx]
+    idx += 1
+    components = tokens[idx:]
+
+    if not HOST_PATTERN.search(url):
+        return line
+
+    new_suite = fix_suite(suite)
+    new_components = ensure_components(components)
+
+    parts = [deb_kw]
+    if opts:
+        parts.append(opts)
+    parts.append(url)
+    parts.append(new_suite)
+    parts.extend(new_components)
+
+    return " ".join(parts) + comment + "\n"
+
+
+def process_classic_file(path: str):
+    with open(path, "r") as f:
+        lines = f.readlines()
+    new_lines = [process_classic_line(l) for l in lines]
+    if new_lines != lines:
+        with open(path, "w") as f:
+            f.writelines(new_lines)
+        print(f"[python] Güncellendi: {path}")
+
+
+def process_deb822_file(path: str):
+    with open(path, "r") as f:
+        content = f.read()
+
+    blocks = re.split(r"\n\n+", content)
+    changed = False
+    new_blocks = []
+
+    for block in blocks:
+        if not block.strip():
+            new_blocks.append(block)
             continue
 
-        # Sadece Debian repository'leri
-        if not re.match(r"^\s*deb(?:-src)?\s+", line):
-            output.append(line)
+        uris_match = re.search(r"^URIs:\s*(.+)$", block, re.MULTILINE)
+        if not uris_match or not HOST_PATTERN.search(uris_match.group(1)):
+            new_blocks.append(block)
             continue
 
-        if (
-            "deb.debian.org" not in line
-            and "security.debian.org" not in line
-        ):
-            output.append(line)
-            continue
+        suites_match = re.search(r"^Suites:\s*(.+)$", block, re.MULTILINE)
+        comps_match = re.search(r"^Components:\s*(.+)$", block, re.MULTILINE)
 
-        parts = line.split()
+        new_block = block
 
-        if len(parts) < 4:
-            output.append(line)
-            continue
+        if suites_match:
+            old_suites = suites_match.group(1).split()
+            new_suites = [fix_suite(s) for s in old_suites]
+            if new_suites != old_suites:
+                new_block = new_block.replace(
+                    suites_match.group(0),
+                    "Suites: " + " ".join(new_suites),
+                )
+                changed = True
 
-        # deb [options] URI suite components
-        uri_index = 1
+        if comps_match:
+            old_comps = comps_match.group(1).split()
+            new_comps = ensure_components(old_comps)
+            if new_comps != old_comps:
+                new_block = new_block.replace(
+                    comps_match.group(0),
+                    "Components: " + " ".join(new_comps),
+                )
+                changed = True
 
-        if parts[1].startswith("["):
-            while uri_index < len(parts) and not parts[uri_index].startswith("http"):
-                uri_index += 1
+        new_blocks.append(new_block)
 
-        if uri_index >= len(parts) - 2:
-            output.append(line)
-            continue
-
-        suite_index = uri_index + 1
-
-        old_suite = parts[suite_index]
-
-        # Debian suite'i mevcut sistemle eşleştir.
-        if old_suite in {
-            "stable",
-            "oldstable",
-            "testing",
-            "trixie",
-            "bookworm",
-            "bullseye",
-            "forky",
-            "sid",
-            "unstable",
-            "trixie-updates",
-            "trixie-security",
-            "trixie-backports",
-            "bookworm-updates",
-            "bookworm-security",
-            "bookworm-backports",
-            "bullseye-updates",
-            "bullseye-security",
-            "bullseye-backports",
-            "forky-updates",
-            "forky-security",
-            "forky-backports",
-        }:
-            if old_suite.endswith("-updates"):
-                parts[suite_index] = f"{codename}-updates"
-            elif old_suite.endswith("-security"):
-                parts[suite_index] = f"{codename}-security"
-            elif old_suite.endswith("-backports"):
-                parts[suite_index] = f"{codename}-backports"
-            else:
-                parts[suite_index] = codename
-
-        components = parts[suite_index + 1:]
-
-        # Yorum varsa ayır.
-        if "#" in components:
-            comment_index = components.index("#")
-            real_components = components[:comment_index]
-            comment = components[comment_index:]
-        else:
-            real_components = components
-            comment = []
-
-        for component in ("main", "contrib", "non-free"):
-            if component not in real_components:
-                real_components.append(component)
-
-        if has_firmware and "non-free-firmware" not in real_components:
-            real_components.append("non-free-firmware")
-
-        parts = parts[:suite_index + 1] + real_components + comment
-
-        output.append(" ".join(parts))
-
-    path.write_text("\n".join(output) + "\n")
+    if changed:
+        with open(path, "w") as f:
+            f.write("\n\n".join(new_blocks))
+        print(f"[python] Güncellendi (deb822): {path}")
 
 
-# sources.list
-fix_list_file(Path("/etc/apt/sources.list"))
+if os.path.exists("/etc/apt/sources.list"):
+    process_classic_file("/etc/apt/sources.list")
 
-# sources.list.d/*.list
-sources_dir = Path("/etc/apt/sources.list.d")
+for path in glob.glob("/etc/apt/sources.list.d/*.list"):
+    process_classic_file(path)
 
-if sources_dir.exists():
+for path in glob.glob("/etc/apt/sources.list.d/*.sources"):
+    process_deb822_file(path)
 
-    for path in sources_dir.glob("*.list"):
-        fix_list_file(path)
+print("[python] APT kaynak düzeltme tamamlandı.")
+PYEOF
 
-    # Modern deb822 .sources dosyaları
-    for path in sources_dir.glob("*.sources"):
+# Duplicate bileşen temizliği (ör. "non-free-firmware non-free-firmware")
+for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [[ -f "${f}" ]] || continue
+    sed -i -E 's/\b(main|contrib|non-free-firmware|non-free)( \1\b)+/\1/g' "${f}"
+done
+ok "Duplicate bileşenler temizlendi."
 
-        text = path.read_text()
+info "apt update çalıştırılıyor..."
+apt-get update
+ok "APT kaynakları güncellendi."
 
-        if (
-            "deb.debian.org" not in text
-            and "security.debian.org" not in text
-        ):
-            continue
-
-        lines = text.splitlines()
-        output = []
-
-        for line in lines:
-
-            if line.startswith("Suites:"):
-
-                suites = line.split()[1:]
-                new_suites = []
-
-                for suite in suites:
-
-                    if suite.endswith("-updates"):
-                        new_suites.append(f"{codename}-updates")
-
-                    elif suite.endswith("-security"):
-                        new_suites.append(f"{codename}-security")
-
-                    elif suite.endswith("-backports"):
-                        new_suites.append(f"{codename}-backports")
-
-                    elif suite in {
-                        "stable",
-                        "oldstable",
-                        "testing",
-                        "unstable",
-                        "bullseye",
-                        "bookworm",
-                        "trixie",
-                        "forky",
-                        "sid",
-                    }:
-                        new_suites.append(codename)
-
-                    else:
-                        new_suites.append(suite)
-
-                line = "Suites: " + " ".join(dict.fromkeys(new_suites))
-
-            elif line.startswith("Components:"):
-
-                components = line.split()[1:]
-
-                for component in ("main", "contrib", "non-free"):
-                    if component not in components:
-                        components.append(component)
-
-                if has_firmware and \
-                   "non-free-firmware" not in components:
-                    components.append("non-free-firmware")
-
-                line = "Components: " + " ".join(components)
-
-            output.append(line)
-
-        path.write_text("\n".join(output) + "\n")
-PY
-
-# ------------------------------------------------------------
-# Duplicate repository component temizliği
-# ------------------------------------------------------------
-
-sudo sed -i \
-    -E 's/(^|[[:space:]])non-free-firmware([[:space:]]+non-free-firmware)+/\1non-free-firmware/g' \
-    /etc/apt/sources.list 2>/dev/null || true
-
-ok "Debian repository'leri $DEBIAN_CODENAME ile hizalandı."
-
-# ------------------------------------------------------------
-# APT update
-# ------------------------------------------------------------
-
-info "APT indeksleri güncelleniyor..."
-
-sudo apt update
-
-# ------------------------------------------------------------
-# i386
-# ------------------------------------------------------------
-
-info "i386 mimarisi kontrol ediliyor..."
+# ==================================================================
+# 2. MİMARİ VE SAĞLIK KONTROLÜ
+# ==================================================================
+section "2/10 — Mimari ve APT sağlık kontrolü"
 
 if dpkg --print-foreign-architectures | grep -qx "i386"; then
-
-    ok "i386 zaten aktif."
-
+    info "i386 mimarisi zaten etkin."
 else
-
-    sudo dpkg --add-architecture i386
-    sudo apt update
-
-    ok "i386 etkinleştirildi."
-
+    info "i386 mimarisi ekleniyor..."
+    dpkg --add-architecture i386
+    apt-get update
+    ok "i386 mimarisi eklendi."
 fi
 
-# ------------------------------------------------------------
-# APT sağlık kontrolü
-# ------------------------------------------------------------
-
-info "APT bağımlılıkları kontrol ediliyor..."
-
-if ! sudo apt-get check; then
-
-    echo
-    warn "APT'de bağımlılık problemi bulundu."
-    echo
-    echo "Sistem otomatik olarak zorlanmayacak."
-    echo "Önce APT problemi çözülmeli."
-    echo
-
-    exit 1
-
+info "apt-get check çalıştırılıyor..."
+if ! apt-get check; then
+    die "APT bütünlük kontrolü başarısız oldu. Lütfen önce APT sorununu manuel çözün (ör. 'sudo apt --fix-broken install'), sonra scripti tekrar çalıştırın."
 fi
+ok "APT sağlıklı görünüyor."
 
-ok "APT sağlıklı."
+UPGRADABLE_COUNT="$(apt list --upgradable 2>/dev/null | grep -c '^[^L]' || true)"
+info "Yükseltilebilir paket sayısı: ${UPGRADABLE_COUNT}"
 
-# ------------------------------------------------------------
-# Paket yükseltme
-# ------------------------------------------------------------
-
-info "Sistem paketleri kontrol ediliyor..."
-
-UPGRADABLE="$(apt list --upgradable 2>/dev/null | tail -n +2 | wc -l)"
-
-echo
-echo "Yükseltilebilir paket sayısı: $UPGRADABLE"
-echo
-
-if (( UPGRADABLE > 0 )); then
-
-    read -rp \
-        "Sistemi $DEBIAN_CODENAME paketleriyle güncelleyelim mi? [Y/n]: " \
-        ANSWER
-
-    ANSWER="${ANSWER:-Y}"
-
-    if [[ "$ANSWER" =~ ^[YyEe]$ ]]; then
-
-        sudo apt full-upgrade -y
-
+if [[ "${UPGRADABLE_COUNT}" -gt 0 ]]; then
+    read -r -p "$(echo -e "${COLOR_YELLOW}full-upgrade yapalım mı? [Y/n]${COLOR_RESET} ")" DO_UPGRADE
+    DO_UPGRADE="${DO_UPGRADE:-Y}"
+    if [[ "${DO_UPGRADE}" =~ ^[Yy]$ ]]; then
+        info "apt full-upgrade çalıştırılıyor..."
+        apt-get full-upgrade -y
+        ok "Sistem yükseltildi."
     else
-
-        warn "full-upgrade atlandı."
-
+        info "full-upgrade atlandı."
     fi
-
-fi
-
-sudo apt-get check
-
-ok "APT tekrar kontrol edildi."
-
-# ------------------------------------------------------------
-# GRUB
-# ------------------------------------------------------------
-
-info "GRUB ayarlanıyor..."
-
-GRUB="/etc/default/grub"
-
-if [[ -f "$GRUB" ]]; then
-
-    sudo cp -a "$GRUB" \
-        "$GRUB.backup-$(date +%Y%m%d-%H%M%S)"
-
-    CURRENT="$(
-        grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB" |
-        sed -E 's/^GRUB_CMDLINE_LINUX_DEFAULT="(.*)"$/\1/' |
-        head -n1
-    )"
-
-    [[ -n "$CURRENT" ]] || CURRENT=""
-
-    add_grub_param() {
-
-        local param="$1"
-
-        if [[ ! " $CURRENT " == *" $param "* ]]; then
-            CURRENT="$CURRENT $param"
-        fi
-
-    }
-
-    add_grub_param "acpi_backlight=native"
-    add_grub_param "nvme_core.default_ps_max_latency_us=0"
-
-    sudo sed -i \
-        "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$CURRENT\"|" \
-        "$GRUB"
-
-    sudo update-grub
-
-    ok "GRUB ayarlandı."
-
-fi
-
-# ------------------------------------------------------------
-# NetworkManager
-# ------------------------------------------------------------
-
-info "NetworkManager wait-online kontrol ediliyor..."
-
-if systemctl list-unit-files \
-    --no-legend \
-    NetworkManager-wait-online.service \
-    >/dev/null 2>&1; then
-
-    sudo systemctl disable \
-        NetworkManager-wait-online.service \
-        2>/dev/null || true
-
-    ok "NetworkManager-wait-online devre dışı."
-
 else
-
-    warn "NetworkManager-wait-online bulunamadı."
-
+    info "Yükseltilecek paket yok."
 fi
 
-# ------------------------------------------------------------
-# Gereksiz paketler
-# ------------------------------------------------------------
+info "apt-get check tekrar çalıştırılıyor..."
+if ! apt-get check; then
+    die "Yükseltme sonrası APT bütünlük kontrolü başarısız oldu."
+fi
+ok "APT sağlığı doğrulandı."
 
-info "Gereksiz paketler kaldırılıyor..."
+# ==================================================================
+# 3. GRUB AYARLARI
+# ==================================================================
+section "3/10 — GRUB ayarları"
 
-sudo apt purge -y \
-    thunderbird \
-    transmission-gtk \
-    warpinator \
-    rhythmbox \
-    2>/dev/null || true
+GRUB_FILE="/etc/default/grub"
+if [[ -f "${GRUB_FILE}" ]]; then
+    cp -a "${GRUB_FILE}" "${GRUB_FILE}.bak-${TIMESTAMP}"
+    ok "GRUB dosyası yedeklendi: ${GRUB_FILE}.bak-${TIMESTAMP}"
 
-sudo apt autoremove --purge -y
+    for param in "acpi_backlight=native" "nvme_core.default_ps_max_latency_us=0"; do
+        if grep -q "GRUB_CMDLINE_LINUX_DEFAULT=" "${GRUB_FILE}"; then
+            CURRENT_LINE="$(grep 'GRUB_CMDLINE_LINUX_DEFAULT=' "${GRUB_FILE}" | head -n1)"
+            if echo "${CURRENT_LINE}" | grep -q -- "${param}"; then
+                info "GRUB parametresi zaten mevcut: ${param}"
+            else
+                sed -i -E "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"(.*)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\1 ${param}\"|" "${GRUB_FILE}"
+                # Baştaki fazladan boşlukları temizle
+                sed -i -E 's/GRUB_CMDLINE_LINUX_DEFAULT="\s+/GRUB_CMDLINE_LINUX_DEFAULT="/' "${GRUB_FILE}"
+                ok "GRUB parametresi eklendi: ${param}"
+            fi
+        else
+            echo "GRUB_CMDLINE_LINUX_DEFAULT=\"${param}\"" >> "${GRUB_FILE}"
+            ok "GRUB_CMDLINE_LINUX_DEFAULT satırı oluşturuldu: ${param}"
+        fi
+    done
 
-# ------------------------------------------------------------
-# Temel paketler
-# ------------------------------------------------------------
+    info "update-grub çalıştırılıyor..."
+    update-grub
+    ok "GRUB güncellendi."
+else
+    warn "${GRUB_FILE} bulunamadı, GRUB adımı atlanıyor."
+fi
 
-info "Temel paketler kuruluyor..."
+# ==================================================================
+# 4. SİSTEM TEMİZLİĞİ
+# ==================================================================
+section "4/10 — Sistem temizliği"
 
-install_if_available \
-    curl \
-    wget \
-    numlockx \
-    fish \
-    audacious \
-    btop \
-    rar \
-    unrar \
-    fastfetch
+if systemctl list-unit-files | grep -q '^NetworkManager-wait-online.service'; then
+    if systemctl is-enabled NetworkManager-wait-online.service >/dev/null 2>&1; then
+        systemctl disable NetworkManager-wait-online.service || warn "NetworkManager-wait-online.service devre dışı bırakılamadı."
+        ok "NetworkManager-wait-online.service devre dışı bırakıldı (boot hızlandırma)."
+    else
+        info "NetworkManager-wait-online.service zaten devre dışı."
+    fi
+else
+    info "NetworkManager-wait-online.service sistemde yok, atlanıyor."
+fi
 
-# ------------------------------------------------------------
-# Steam
-# ------------------------------------------------------------
+for pkg in thunderbird transmission-gtk warpinator rhythmbox; do
+    if dpkg -s "${pkg}" >/dev/null 2>&1; then
+        info "Kaldırılıyor: ${pkg}"
+        apt-get purge -y "${pkg}" || warn "${pkg} purge edilirken hata oluştu, atlanıyor."
+    else
+        info "${pkg} zaten kurulu değil."
+    fi
+done
 
-info "Steam kurulumu..."
+info "apt autoremove --purge çalıştırılıyor..."
+apt-get autoremove --purge -y
+ok "Sistem temizliği tamamlandı."
+
+# ==================================================================
+# 5. TEMEL PAKETLER
+# ==================================================================
+section "5/10 — Temel paketler kuruluyor"
+
+install_if_available curl wget numlockx fish audacious btop rar unrar fastfetch
+
+# ==================================================================
+# 6. OYUN / WINE / NVIDIA
+# ==================================================================
+section "6/10 — Oyun, Wine ve NVIDIA kurulumu"
 
 if package_exists steam-installer; then
-
-    if sudo apt install -y steam-installer; then
-        ok "Steam kuruldu."
-    else
-        warn "Steam kurulamadı."
-    fi
-
+    install_if_available steam-installer
 else
-
-    warn "steam-installer repository'de bulunamadı."
-
+    warn "steam-installer paketi depoda bulunamadı, atlanıyor."
 fi
 
-# ------------------------------------------------------------
-# Wine
-# ------------------------------------------------------------
-
-info "Wine kurulumu..."
-
-install_if_available \
-    wine \
-    wine32 \
-    winetricks
-
-# ------------------------------------------------------------
-# NVIDIA
-# ------------------------------------------------------------
-
-info "NVIDIA kurulumu..."
+install_if_available wine wine32 winetricks
 
 if package_exists nvidia-driver; then
+    info "NVIDIA sürücüsü kurulacak..."
+    install_if_available dkms build-essential
 
-    install_if_available \
-        dkms \
-        build-essential
-
-    # Bilerek tam kernel header kullanıyoruz.
-    if package_exists "linux-headers-$(uname -r)"; then
-
-        sudo apt install -y \
-            "linux-headers-$(uname -r)"
-
-        ok "Kernel header kuruldu: $(uname -r)"
-
+    KERNEL_HEADERS="linux-headers-$(uname -r)"
+    if package_exists "${KERNEL_HEADERS}"; then
+        install_if_available "${KERNEL_HEADERS}"
     else
-
-        warn "linux-headers-$(uname -r) bulunamadı."
-        warn "NVIDIA DKMS kurulumu yine de deneniyor."
-
+        warn "${KERNEL_HEADERS} bulunamadı, kernel header kurulumu atlanıyor. NVIDIA modülleri derlenemeyebilir."
     fi
 
-    sudo apt install -y nvidia-driver
+    install_if_available nvidia-driver nvidia-settings nvidia-xconfig
 
-    install_if_available \
-        nvidia-settings \
-        nvidia-xconfig
-
-    sudo tee /etc/modprobe.d/blacklist-nouveau.conf >/dev/null <<'EOF'
+    NOUVEAU_BLACKLIST="/etc/modprobe.d/blacklist-nouveau.conf"
+    if [[ -f "${NOUVEAU_BLACKLIST}" ]] && grep -q "blacklist nouveau" "${NOUVEAU_BLACKLIST}"; then
+        info "Nouveau zaten blacklist'te."
+    else
+        cat > "${NOUVEAU_BLACKLIST}" <<'EOF'
 blacklist nouveau
 options nouveau modeset=0
 EOF
+        ok "Nouveau blacklist'e eklendi: ${NOUVEAU_BLACKLIST}"
+    fi
 
-    sudo update-initramfs -u
+    info "initramfs güncelleniyor..."
+    update-initramfs -u || warn "update-initramfs sırasında hata oluştu."
 
-    sudo dkms autoinstall || \
-        warn "DKMS bazı modülleri derleyemedi."
+    info "dkms autoinstall çalıştırılıyor..."
+    dkms autoinstall || warn "dkms autoinstall sırasında hata oluştu."
 
-    sudo depmod -a
+    depmod -a || warn "depmod sırasında hata oluştu."
 
-    if sudo modprobe nvidia 2>/dev/null; then
-        ok "NVIDIA kernel modülü yüklendi."
+    if modprobe nvidia 2>/dev/null; then
+        ok "nvidia modülü yüklendi."
     else
-        warn "NVIDIA modülü şu anda yüklenemedi."
+        warn "nvidia modülü şu an yüklenemedi, muhtemelen yeniden başlatma gerekiyor."
     fi
-
 else
-
-    warn "nvidia-driver bulunamadı."
-
+    info "nvidia-driver paketi depoda bulunamadı, NVIDIA kurulumu atlanıyor."
 fi
 
-# ------------------------------------------------------------
-# Fish shell
-# ------------------------------------------------------------
+# Winetricks kurulumu (gerçek kullanıcı olarak)
+WINE_PREFIX="${REAL_HOME}/.wine"
+info "Wine prefix hazırlanıyor: ${WINE_PREFIX}"
+run_as_user "WINEPREFIX='${WINE_PREFIX}' wineboot -u" || warn "wineboot çalıştırılırken hata oluştu."
 
-info "Fish ayarlanıyor..."
+WINETRICKS_VERBS="dotnet40 dotnet45 dotnet48 vcrun2022 vcrun6sp6 allfonts"
+info "Winetricks bileşenleri kuruluyor: ${WINETRICKS_VERBS}"
+run_as_user "WINEPREFIX='${WINE_PREFIX}' winetricks -q ${WINETRICKS_VERBS}" || warn "winetricks bileşenleri kurulurken hata oluştu."
 
-if command -v fish >/dev/null 2>&1; then
+if run_as_user "winetricks list-all" 2>/dev/null | grep -qx "dxvk2030"; then
+    info "dxvk2030 mevcut, kuruluyor..."
+    run_as_user "WINEPREFIX='${WINE_PREFIX}' winetricks -q dxvk2030" || warn "dxvk2030 kurulurken hata oluştu."
+else
+    info "dxvk2030 winetricks listesinde bulunamadı, atlanıyor."
+fi
 
-    FISH_PATH="$(command -v fish)"
+# ==================================================================
+# 7. SHELL VE GÖRÜNÜM
+# ==================================================================
+section "7/10 — Shell ve görünüm ayarları"
 
-    CURRENT_SHELL="$(getent passwd "$REAL_USER" | cut -d: -f7)"
-
-    if [[ "$CURRENT_SHELL" != "$FISH_PATH" ]]; then
-        sudo chsh -s "$FISH_PATH" "$REAL_USER"
+FISH_PATH="$(command -v fish || true)"
+if [[ -n "${FISH_PATH}" ]]; then
+    CURRENT_SHELL="$(getent passwd "${REAL_USER}" | cut -d: -f7)"
+    if [[ "${CURRENT_SHELL}" == "${FISH_PATH}" ]]; then
+        info "Varsayılan shell zaten fish."
+    else
+        grep -qx "${FISH_PATH}" /etc/shells || echo "${FISH_PATH}" >> /etc/shells
+        chsh -s "${FISH_PATH}" "${REAL_USER}"
+        ok "Varsayılan shell fish olarak ayarlandı."
     fi
-
-    ok "Fish varsayılan shell olarak ayarlandı."
-
+else
+    warn "fish bulunamadı, shell değişikliği atlanıyor."
 fi
-
-# ------------------------------------------------------------
-# Starship
-# ------------------------------------------------------------
-
-info "Starship kontrol ediliyor..."
 
 if command -v starship >/dev/null 2>&1; then
-
-    ok "Starship zaten kurulu."
-
+    info "starship zaten kurulu."
 else
-
-    if command -v curl >/dev/null 2>&1; then
-
-        curl -sS https://starship.rs/install.sh |
-            sudo sh -s -- -y
-
-        ok "Starship kuruldu."
-
+    info "starship kuruluyor..."
+    if curl -sS https://starship.rs/install.sh | sh -s -- -y; then
+        ok "starship kuruldu."
     else
-
-        warn "curl bulunamadığı için Starship kurulamadı."
-
+        warn "starship kurulumu başarısız oldu."
     fi
-
 fi
 
-# ------------------------------------------------------------
-# Flatpak
-# ------------------------------------------------------------
-
-info "Flatpak kuruluyor..."
-
-install_if_available flatpak
+if command -v flatpak >/dev/null 2>&1; then
+    info "flatpak zaten kurulu."
+else
+    install_if_available flatpak
+fi
 
 if command -v flatpak >/dev/null 2>&1; then
-
-    if ! flatpak remotes --columns=name 2>/dev/null |
-        grep -qx "flathub"; then
-
-        sudo flatpak remote-add \
-            --if-not-exists \
-            flathub \
-            https://flathub.org/repo/flathub.flatpakrepo
-
+    if flatpak remote-list | grep -q '^flathub'; then
+        info "Flathub remote zaten ekli."
+    else
+        flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+        ok "Flathub remote eklendi."
     fi
 
     FLATPAK_APPS=(
-        org.kde.kdenlive
-        org.audacityteam.Audacity
-        org.nickvision.tubeconverter
-        org.onlyoffice.desktopeditors
-        net.davidotek.pupgui2
-        com.spotify.Client
-        com.heroicgameslauncher.hgl
+        "org.kde.kdenlive"
+        "org.audacityteam.Audacity"
+        "org.nickvision.tubeconverter"
+        "org.onlyoffice.desktopeditors"
+        "net.davidotek.pupgui2"
+        "com.spotify.Client"
+        "com.heroicgameslauncher.hgl"
     )
 
     for app in "${FLATPAK_APPS[@]}"; do
-
-        if flatpak info "$app" >/dev/null 2>&1; then
-
-            ok "$app zaten kurulu."
-
+        if flatpak list --app | grep -q "${app}"; then
+            info "Flatpak uygulaması zaten kurulu: ${app}"
         else
-
-            if flatpak install -y flathub "$app"; then
-                ok "$app kuruldu."
+            info "Kuruluyor: ${app}"
+            if flatpak install -y flathub "${app}"; then
+                ok "Kuruldu: ${app}"
             else
-                warn "$app kurulamadı."
+                warn "${app} kurulurken hata oluştu, atlanıyor."
             fi
-
         fi
-
     done
-
-fi
-
-# ------------------------------------------------------------
-# Wine / Winetricks
-# ------------------------------------------------------------
-
-info "Winetricks ayarlanıyor..."
-
-if command -v winetricks >/dev/null 2>&1; then
-
-    export WINEPREFIX="$REAL_HOME/.wine"
-
-    sudo -u "$REAL_USER" \
-        HOME="$REAL_HOME" \
-        WINEPREFIX="$WINEPREFIX" \
-        wineboot -u 2>/dev/null || true
-
-    sudo -u "$REAL_USER" \
-        HOME="$REAL_HOME" \
-        WINEPREFIX="$WINEPREFIX" \
-        winetricks -q \
-            dotnet40 \
-            dotnet45 \
-            dotnet48 \
-            vcrun2022 \
-            vcrun6sp6 \
-            allfonts \
-        || warn "Bazı Winetricks bileşenleri kurulamadı."
-
-    if sudo -u "$REAL_USER" \
-        HOME="$REAL_HOME" \
-        WINEPREFIX="$WINEPREFIX" \
-        winetricks list-all 2>/dev/null |
-        grep -qx "dxvk2030"; then
-
-        sudo -u "$REAL_USER" \
-            HOME="$REAL_HOME" \
-            WINEPREFIX="$WINEPREFIX" \
-            winetricks dxvk2030 \
-            || warn "DXVK 2.3.0 kurulamadı."
-
-    else
-
-        warn "Bu Winetricks sürümünde dxvk2030 bulunamadı."
-
-    fi
-
-fi
-
-# ------------------------------------------------------------
-# zRAM
-# ------------------------------------------------------------
-
-info "zRAM ayarlanıyor..."
-
-if package_exists zram-tools; then
-
-    sudo apt install -y zram-tools
-
-    sudo tee /etc/default/zramswap >/dev/null <<'EOF'
-ALGO=zstd
-PERCENT=50
-PRIORITY=100
-EOF
-
-    sudo systemctl enable zramswap.service
-
-    sudo systemctl restart zramswap.service \
-        || warn "zram-tools servisi yeniden başlatılamadı."
-
-    ok "zRAM yapılandırıldı."
-
 else
-
-    warn "zram-tools bulunamadı."
-
+    warn "flatpak bulunamadı, Flatpak uygulamaları atlanıyor."
 fi
 
-# ------------------------------------------------------------
-# Swapfile
-# ------------------------------------------------------------
+# ==================================================================
+# 8. BELLEK / PERFORMANS
+# ==================================================================
+section "8/10 — Bellek ve performans ayarları"
 
-info "Swapfile kontrol ediliyor..."
+install_if_available zram-tools
+
+ZRAM_CONF="/etc/default/zramswap"
+if [[ -f "${ZRAM_CONF}" ]]; then
+    cp -a "${ZRAM_CONF}" "${ZRAM_CONF}.bak-${TIMESTAMP}"
+fi
+
+declare -A ZRAM_SETTINGS=( [ALGO]="zstd" [PERCENT]="50" [PRIORITY]="100" )
+touch "${ZRAM_CONF}"
+for key in "${!ZRAM_SETTINGS[@]}"; do
+    value="${ZRAM_SETTINGS[$key]}"
+    if grep -qE "^${key}=" "${ZRAM_CONF}"; then
+        sed -i -E "s|^${key}=.*|${key}=${value}|" "${ZRAM_CONF}"
+    else
+        echo "${key}=${value}" >> "${ZRAM_CONF}"
+    fi
+done
+ok "zram-tools yapılandırıldı (${ZRAM_CONF})."
+
+systemctl enable zramswap.service || warn "zramswap.service etkinleştirilemedi."
+systemctl restart zramswap.service || warn "zramswap.service yeniden başlatılamadı."
+ok "zramswap servisi etkin ve çalışıyor."
 
 SWAPFILE="/swapfile"
-TARGET_SIZE_GB=4
-TARGET_SIZE_BYTES=$((TARGET_SIZE_GB * 1024 * 1024 * 1024))
+SWAPFILE_TARGET_BYTES=$((4 * 1024 * 1024 * 1024))
 
-# Aktif swapfile'ı kapat
-if swapon --show=NAME --noheadings 2>/dev/null |
-    grep -qx "$SWAPFILE"; then
-
-    sudo swapoff "$SWAPFILE"
-
-fi
-
-if [[ -f "$SWAPFILE" ]]; then
-
-    CURRENT_SIZE="$(stat -c '%s' "$SWAPFILE")"
-
-    echo
-    echo "Mevcut /swapfile:"
-    echo "  Boyut: $((CURRENT_SIZE / 1024 / 1024 / 1024)) GB"
-    echo "  Hedef: 4 GB"
-    echo
-
-    if [[ "$CURRENT_SIZE" -ne "$TARGET_SIZE_BYTES" ]]; then
-
-        info "Swapfile 4 GB'a ayarlanıyor..."
-
-        sudo rm -f "$SWAPFILE"
-
-        sudo fallocate -l 4G "$SWAPFILE"
-        sudo chmod 600 "$SWAPFILE"
-        sudo mkswap "$SWAPFILE" >/dev/null
-
+need_new_swapfile=true
+if [[ -f "${SWAPFILE}" ]]; then
+    CURRENT_SIZE="$(stat -c%s "${SWAPFILE}")"
+    if [[ "${CURRENT_SIZE}" -eq "${SWAPFILE_TARGET_BYTES}" ]]; then
+        info "${SWAPFILE} zaten tam 4GB boyutunda."
+        need_new_swapfile=false
     else
-
-        ok "Swapfile zaten 4 GB."
-
-        sudo chmod 600 "$SWAPFILE"
-
+        info "${SWAPFILE} mevcut ama boyutu farklı (${CURRENT_SIZE} bayt), yeniden oluşturulacak."
+        sudo swapoff "${SWAPFILE}" 2>/dev/null || true
+        rm -f "${SWAPFILE}"
     fi
-
-else
-
-    info "4 GB swapfile oluşturuluyor..."
-
-    sudo fallocate -l 4G "$SWAPFILE"
-    sudo chmod 600 "$SWAPFILE"
-    sudo mkswap "$SWAPFILE" >/dev/null
-
 fi
 
-# fstab
-if grep -qE '^[[:space:]]*/swapfile[[:space:]]' /etc/fstab; then
-
-    ok "/swapfile zaten fstab'da."
-
-else
-
-    echo "/swapfile none swap sw,pri=10 0 0" |
-        sudo tee -a /etc/fstab >/dev/null
-
+if [[ "${need_new_swapfile}" == true ]]; then
+    info "${SWAPFILE} oluşturuluyor (4GB)..."
+    if command -v fallocate >/dev/null 2>&1 && fallocate -l 4G "${SWAPFILE}" 2>/dev/null; then
+        :
+    else
+        dd if=/dev/zero of="${SWAPFILE}" bs=1M count=4096 status=progress
+    fi
+    chmod 600 "${SWAPFILE}"
+    sudo mkswap "${SWAPFILE}"
+    ok "${SWAPFILE} oluşturuldu."
 fi
 
-sudo swapon "$SWAPFILE" 2>/dev/null || true
+chmod 600 "${SWAPFILE}"
 
-# ------------------------------------------------------------
-# Swappiness
-# ------------------------------------------------------------
+if grep -qE "^\s*${SWAPFILE}\s" /etc/fstab; then
+    info "${SWAPFILE} zaten /etc/fstab içinde."
+else
+    echo "${SWAPFILE} none swap sw,pri=10 0 0" >> /etc/fstab
+    ok "${SWAPFILE} /etc/fstab içine eklendi (pri=10)."
+fi
 
-info "Swappiness ayarlanıyor..."
+if sudo swapon --show=NAME --noheadings | grep -qx "${SWAPFILE}"; then
+    info "${SWAPFILE} zaten aktif."
+else
+    sudo swapon "${SWAPFILE}" || warn "${SWAPFILE} etkinleştirilemedi."
+    ok "${SWAPFILE} etkinleştirildi."
+fi
 
-sudo tee /etc/sysctl.d/99-mozcelik-swappiness.conf >/dev/null <<'EOF'
-vm.swappiness=4
-EOF
-
+SYSCTL_FILE="/etc/sysctl.d/99-mozcelik-swappiness.conf"
+if [[ -f "${SYSCTL_FILE}" ]] && grep -q "^vm.swappiness=4$" "${SYSCTL_FILE}"; then
+    info "swappiness zaten 4 olarak ayarlı."
+else
+    echo "vm.swappiness=4" > "${SYSCTL_FILE}"
+    ok "${SYSCTL_FILE} yazıldı."
+fi
 sudo sysctl --system >/dev/null
+ok "sysctl ayarları uygulandı."
 
-ok "vm.swappiness = 4"
+# ==================================================================
+# 9. KONFİGÜRASYON DOSYALARI
+# ==================================================================
+section "9/10 — Konfigürasyon dosyaları"
 
-# ------------------------------------------------------------
-# Fish config
-# ------------------------------------------------------------
+FISH_CONF_DIR="${REAL_HOME}/.config/fish/conf.d"
+mkdir -p "${FISH_CONF_DIR}"
+FISH_CONF_FILE="${FISH_CONF_DIR}/mozcelik.fish"
 
-info "Fish yapılandırılıyor..."
-
-FISH_CONF="$REAL_HOME/.config/fish/conf.d"
-
-sudo -u "$REAL_USER" mkdir -p "$FISH_CONF"
-
-sudo -u "$REAL_USER" tee \
-    "$FISH_CONF/mozcelik.fish" >/dev/null <<'EOF'
-
-# MOzcelik Debian FSKS
-
+cat > "${FISH_CONF_FILE}" <<'FISHEOF'
 if status is-interactive
-
-    if command -v fastfetch >/dev/null
-        fastfetch
-    end
-
-end
-
-if command -v starship >/dev/null
+    fastfetch
     starship init fish | source
 end
 
-alias güncelle='sudo apt update && sudo apt upgrade -y && flatpak update'
-alias temizle='sudo apt autoremove --purge -y && sudo apt autoclean -y && flatpak uninstall --unused'
-alias yükle='sudo apt install'
-alias fyükle='flatpak install flathub'
-alias sil='sudo apt remove'
-alias fsil='flatpak uninstall'
-alias kapa='poweroff'
-alias söyle='echo'
+function güncelle
+    sudo apt update; and sudo apt upgrade -y; and flatpak update -y
+end
 
-EOF
+function temizle
+    sudo apt autoremove --purge -y; and sudo apt autoclean -y; and flatpak uninstall --unused -y
+end
 
-sudo chown -R "$REAL_USER:$REAL_USER" \
-    "$REAL_HOME/.config/fish"
+function yükle
+    sudo apt install -y $argv
+end
 
-ok "Fish config oluşturuldu."
+function fyükle
+    flatpak install -y flathub $argv
+end
 
-# ------------------------------------------------------------
-# Fastfetch
-# ------------------------------------------------------------
+function sil
+    sudo apt remove -y $argv
+end
 
-info "Fastfetch yapılandırılıyor..."
+function fsil
+    flatpak uninstall -y $argv
+end
 
-FASTFETCH_DIR="$REAL_HOME/.config/fastfetch"
+function kapa
+    systemctl poweroff
+end
 
-sudo -u "$REAL_USER" mkdir -p "$FASTFETCH_DIR"
+function söyle
+    echo $argv
+end
+FISHEOF
+ok "Fish konfigürasyonu yazıldı: ${FISH_CONF_FILE}"
 
-sudo -u "$REAL_USER" tee \
-    "$FASTFETCH_DIR/config.jsonc" >/dev/null <<'EOF'
+FASTFETCH_CONF_DIR="${REAL_HOME}/.config/fastfetch"
+mkdir -p "${FASTFETCH_CONF_DIR}"
+FASTFETCH_CONF_FILE="${FASTFETCH_CONF_DIR}/config.jsonc"
+
+cat > "${FASTFETCH_CONF_FILE}" <<'FASTFETCHEOF'
 {
-  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/master/doc/json_schema.json",
-
-  "display": {
-    "key": {
-      "width": 10
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+    "logo": {
+        "type": "kitty-direct",
+        "source": "~/.config/fastfetch/logo.png"
     },
-    "size": {
-      "binaryPrefix": "jedec"
+    "display": {
+        "size": {
+            "binaryPrefix": "jedec"
+        },
+        "key": {
+            "width": 10
+        }
     },
-    "separator": ""
-  },
-
-  "logo": {
-    "type": "kitty-direct",
-    "source": "~/.config/fastfetch/marin.png",
-    "width": 20,
-    "height": 10
-  },
-
-  "modules": [
-    "break",
-
-    {
-      "type": "os",
-      "key": "is",
-      "keyColor": "yellow",
-      "format": "{name}"
-    },
-
-    {
-      "type": "kernel",
-      "key": "lnx",
-      "keyColor": "green"
-    },
-
-    {
-      "type": "packages",
-      "key": "pkgs",
-      "keyColor": "cyan"
-    },
-
-    {
-      "type": "uptime",
-      "key": "upt",
-      "keyColor": "green"
-    },
-
-    {
-      "type": "cpu",
-      "key": "cpu",
-      "keyColor": "red",
-      "format": "{name}"
-    },
-
-    {
-      "type": "gpu",
-      "key": "gpu",
-      "keyColor": "red",
-      "format": "{name}"
-    },
-
-    {
-      "type": "memory",
-      "key": "ram",
-      "keyColor": "yellow",
-      "format": "{used} / {total}"
-    },
-
-    {
-      "type": "swap",
-      "key": "swap",
-      "keyColor": "yellow",
-      "format": "{used} / {total}"
-    },
-
-    {
-      "type": "disk",
-      "key": "disk",
-      "keyColor": "cyan",
-      "folders": [
-        "/"
-      ],
-      "format": "{size-used} / {size-total}"
-    },
-
-    "break",
-
-    {
-      "type": "custom",
-      "format": "\u001b[33m󰮯 \u001b[32m󰊠 \u001b[34m󰊠 \u001b[31m󰊠 \u001b[36m󰊠 \u001b[35m󰊠 \u001b[37m󰊠"
-    }
-  ]
+    "modules": [
+        {
+            "type": "os",
+            "key": "  OS",
+            "keyColor": "cyan"
+        },
+        {
+            "type": "kernel",
+            "key": "  Kernel",
+            "keyColor": "cyan"
+        },
+        {
+            "type": "packages",
+            "key": "  Paket",
+            "keyColor": "green"
+        },
+        {
+            "type": "uptime",
+            "key": "  Süre",
+            "keyColor": "green"
+        },
+        {
+            "type": "cpu",
+            "key": "  CPU",
+            "keyColor": "yellow",
+            "format": "{1} ({3}) @ {7} GHz"
+        },
+        {
+            "type": "gpu",
+            "key": "  GPU",
+            "keyColor": "yellow"
+        },
+        {
+            "type": "memory",
+            "key": "  RAM",
+            "keyColor": "magenta",
+            "format": "{used} / {total} ({percentage})"
+        },
+        {
+            "type": "swap",
+            "key": "  Swap",
+            "keyColor": "magenta",
+            "format": "{used} / {total} ({percentage})"
+        },
+        {
+            "type": "disk",
+            "key": "  Disk",
+            "keyColor": "blue",
+            "format": "{used} / {total} ({percentage})"
+        },
+        {
+            "type": "custom",
+            "format": "\u001b[1;36m─────────────────────────\u001b[0m"
+        }
+    ]
 }
-EOF
+FASTFETCHEOF
+ok "Fastfetch konfigürasyonu yazıldı: ${FASTFETCH_CONF_FILE}"
 
-sudo chown -R "$REAL_USER:$REAL_USER" \
-    "$FASTFETCH_DIR"
+info "Kullanıcı dosyalarının sahipliği düzeltiliyor..."
+chown -R "${REAL_USER}:${REAL_USER}" "${REAL_HOME}/.config/fish" "${REAL_HOME}/.config/fastfetch" 2>/dev/null || true
+ok "Sahiplik ${REAL_USER} kullanıcısına ayarlandı."
 
-ok "Fastfetch yapılandırıldı."
-
-# ------------------------------------------------------------
-# SON KONTROLLER
-# ------------------------------------------------------------
-
-echo
-echo "============================================================"
-echo "                    SON DURUM"
-echo "============================================================"
-echo
-
-echo "Debian:"
-echo "  Sürüm    : $DEBIAN_VERSION"
-echo "  Codename : $DEBIAN_CODENAME"
+# ==================================================================
+# 10. KAPANIŞ RAPORU
+# ==================================================================
+section "10/10 — Kurulum tamamlandı, özet rapor"
 
 echo
-echo "Kernel:"
-echo "  $(uname -r)"
+echo -e "${COLOR_CYAN}════════════════ DURUM RAPORU ════════════════${COLOR_RESET}"
 
-echo
-echo "APT:"
-if sudo apt-get check >/dev/null 2>&1; then
-    echo "  ✅ Sağlıklı"
+echo -e "Debian sürümü      : ${PRETTY_NAME:-bilinmiyor} (${DEBIAN_CODENAME})"
+echo -e "Kernel sürümü      : $(uname -r)"
+
+if apt-get check >/dev/null 2>&1; then
+    echo -e "APT sağlığı        : ${COLOR_GREEN}Sağlıklı${COLOR_RESET}"
 else
-    echo "  ❌ Sorun var"
+    echo -e "APT sağlığı        : ${COLOR_RED}Sorunlu${COLOR_RESET}"
 fi
 
-echo
-echo "i386:"
-if dpkg --print-foreign-architectures |
-    grep -qx i386; then
-    echo "  ✅ Aktif"
+if dpkg --print-foreign-architectures | grep -qx "i386"; then
+    echo -e "i386 mimarisi      : ${COLOR_GREEN}Etkin${COLOR_RESET}"
 else
-    echo "  ❌ Aktif değil"
+    echo -e "i386 mimarisi      : ${COLOR_YELLOW}Etkin değil${COLOR_RESET}"
 fi
 
-echo
-echo "NVIDIA:"
-if command -v nvidia-smi >/dev/null 2>&1 &&
-   nvidia-smi >/dev/null 2>&1; then
-    echo "  ✅ NVIDIA çalışıyor"
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    echo -e "NVIDIA             : ${COLOR_GREEN}Çalışıyor${COLOR_RESET}"
+elif package_exists nvidia-driver; then
+    echo -e "NVIDIA             : ${COLOR_YELLOW}Kurulu ama şu an aktif değil (reboot gerekebilir)${COLOR_RESET}"
 else
-    echo "  ⚠️ NVIDIA doğrulanamadı"
+    echo -e "NVIDIA             : Kurulmadı"
 fi
 
-echo
-echo "Steam:"
-if command -v steam >/dev/null 2>&1 ||
-   dpkg-query -W steam-installer >/dev/null 2>&1; then
-    echo "  ✅ Kurulu"
+if command -v steam >/dev/null 2>&1 || dpkg -s steam-installer >/dev/null 2>&1; then
+    echo -e "Steam              : ${COLOR_GREEN}Kurulu${COLOR_RESET}"
 else
-    echo "  ⚠️ Kurulu değil"
+    echo -e "Steam              : Kurulmadı"
 fi
 
-echo
-echo "Wine:"
 if command -v wine >/dev/null 2>&1; then
-    echo "  ✅ Kurulu"
+    echo -e "Wine               : ${COLOR_GREEN}Kurulu ($(wine --version 2>/dev/null))${COLOR_RESET}"
 else
-    echo "  ⚠️ Kurulu değil"
+    echo -e "Wine               : Kurulmadı"
 fi
 
-echo
-echo "Fish:"
 if command -v fish >/dev/null 2>&1; then
-    echo "  ✅ Kurulu"
+    echo -e "Fish               : ${COLOR_GREEN}Kurulu${COLOR_RESET}"
 else
-    echo "  ⚠️ Kurulu değil"
+    echo -e "Fish               : Kurulmadı"
 fi
 
-echo
-echo "zRAM:"
 if command -v zramctl >/dev/null 2>&1; then
-    zramctl 2>/dev/null || true
-else
-    echo "  ⚠️ zramctl bulunamadı"
+    echo -e "Zram durumu        :"
+    sudo zramctl || true
 fi
 
-echo
-echo "Swap:"
-swapon --show 2>/dev/null || true
+echo -e "Aktif swap listesi :"
+sudo swapon --show || true
 
-echo
-echo "Swappiness:"
-cat /proc/sys/vm/swappiness
+CURRENT_SWAPPINESS="$(cat /proc/sys/vm/swappiness 2>/dev/null || echo "bilinmiyor")"
+echo -e "Swappiness         : ${CURRENT_SWAPPINESS}"
 
+echo -e "${COLOR_CYAN}════════════════════════════════════════════════${COLOR_RESET}"
 echo
-echo "============================================================"
-echo "              FSKS $SCRIPT_VERSION TAMAMLANDI"
-echo "============================================================"
-echo
-echo "🔄 Sistemi yeniden başlatman önerilir:"
-echo
-echo "sudo reboot"
+ok "Kurulum tamamlandı. Değişikliklerin tam olarak etkili olması için:"
+echo -e "  ${COLOR_YELLOW}sudo reboot${COLOR_RESET}"
 echo
