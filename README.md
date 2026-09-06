@@ -70,7 +70,3 @@ Katkı
 -----
 
 Hata bildirimi veya geliştirme önerileri için Issues / PR açabilirsiniz.
-
-
-Hazırlayan: [Senin GitHub Kullanıcı Adın]
-Tarih: Mart 2026
