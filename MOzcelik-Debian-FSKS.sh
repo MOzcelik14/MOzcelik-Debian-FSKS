@@ -11,8 +11,9 @@ echo "=============================="
 echo "== APT REPOLARI (contrib/non-free) =="
 echo "=============================="
 
-# /etc/apt/sources.list içindeki tüm 'main' içeren deb satırlarına contrib/non-free ekle
-sudo sed -i -E 's/^(deb .*)( main)(.*)$/\1\2 contrib non-free non-free-firmware\3/' /etc/apt/sources.list
+# /etc/apt/sources.list içindeki 'main' içeren deb satırlarına contrib/non-free ekle
+# (idempotent: satırda zaten "contrib" yoksa ekle)
+sudo sed -i -E '/contrib/!s/^(deb .*)( main)(.*)$/\1\2 contrib non-free non-free-firmware\3/' /etc/apt/sources.list
 
 # 32-bit mimari desteği (Steam/Wine)
 sudo dpkg --add-architecture i386
@@ -23,7 +24,13 @@ echo "=============================="
 echo "== GRUB PARAMETRELERİ EKLENİYOR =="
 echo "=============================="
 
-sudo sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 acpi_backlight=native nvme_core.default_ps_max_latency_us=0"/' /etc/default/grub
+# idempotent: parametreler zaten varsa tekrar ekleme
+GRUB_EXTRA="acpi_backlight=native nvme_core.default_ps_max_latency_us=0 nvidia-drm.modeset=1"
+if ! grep -q "nvidia-drm.modeset=1" /etc/default/grub; then
+    sudo sed -i -E "s/GRUB_CMDLINE_LINUX_DEFAULT=\"(.*)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 ${GRUB_EXTRA}\"/" /etc/default/grub
+else
+    echo "GRUB parametreleri zaten mevcut, atlanıyor."
+fi
 sudo update-grub
 
 echo
@@ -44,11 +51,8 @@ echo "=============================="
 echo "== NVIDIA SÜRÜCÜ KURULUMU =="
 echo "=============================="
 
-# gerekli paketler (dkms, kernel headers, derleme araçları)
 sudo apt install -y dkms build-essential linux-headers-$(uname -r)
-
-# NVIDIA sürücü ve yardımcı araçlar
-sudo apt install -y nvidia-driver nvidia-settings nvidia-xconfig
+sudo apt install -y nvidia-driver nvidia-settings
 
 # nouveau blacklist
 sudo tee /etc/modprobe.d/blacklist-nouveau.conf >/dev/null <<EOF
@@ -62,7 +66,7 @@ sudo update-initramfs -u
 # NVIDIA modülünü derle ve yükle
 sudo dkms autoinstall
 sudo depmod -a
-sudo modprobe nvidia
+sudo modprobe nvidia || echo "⚠️ modprobe şimdi başarısız olabilir, reboot sonrası normalde düzelir (nouveau hâlâ aktif olabilir)."
 
 # Kontrol
 echo "NVIDIA sürücü durumu:"
@@ -77,7 +81,7 @@ echo "=============================="
 echo "== SHELL AYARLANIYOR =="
 echo "=============================="
 
-sudo chsh -s /usr/bin/fish "$SUDO_USER"
+sudo chsh -s /usr/bin/fish "$USER"
 
 curl -sS https://starship.rs/install.sh | sh -s -- -y
 
@@ -87,26 +91,23 @@ echo "=============================="
 
 sudo apt install -y flatpak
 sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
 sudo flatpak install flathub -y \
-    org.kde.kdenlive \
-    org.audacityteam.Audacity \
-    org.nickvision.tubeconverter \
-    org.onlyoffice.desktopeditors \
-    net.davidotek.pupgui2 \
-    com.spotify.Client \
-    com.heroicgameslauncher.hgl
+org.kde.kdenlive \
+app.zen_browser.zen \
+org.audacityteam.Audacity \
+org.nickvision.tubeconverter \
+org.onlyoffice.desktopeditors \
+net.davidotek.pupgui2 \
+com.google.AndroidStudio \
+com.heroicgameslauncher.hgl
+
 
 echo "=============================="
 echo "== Winetricks Kurulumları =="
 echo "=============================="
 
-winetricks -q dotnet40 dotnet45 dotnet48 vcrun2022 vcrun6sp6 allfonts
-
-echo "=============================="
-echo "== DXVK (FL için gerekli) =="
-echo "=============================="
-
-winetricks dxvk2030
+winetricks -q dotnet40 dotnet45 dotnet48 vcrun2022 vcrun6sp6 allfonts dxvk2030
 
 echo "==> zRAM, Swap ve Swappiness ayarlanıyor..."
 
@@ -181,6 +182,16 @@ EOF
 echo
 
 echo "Fastfetch yapılandırılıyor..."
+
+echo "=============================="
+echo "== JetBrainsMono Nerd Font ==">
+echo "=============================="
+
+mkdir -p ~/.local/share/fonts
+curl -sSL -o /tmp/JetBrainsMono.zip https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip
+unzip -o /tmp/JetBrainsMono.zip -d ~/.local/share/fonts
+rm /tmp/JetBrainsMono.zip
+fc-cache -fv
 
 mkdir -p ~/.config/fastfetch
 
