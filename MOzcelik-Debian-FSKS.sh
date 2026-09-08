@@ -53,20 +53,10 @@ echo "=============================="
 
 sudo apt install -y dkms build-essential linux-headers-$(uname -r)
 sudo apt install -y nvidia-driver nvidia-settings
-
-# nouveau blacklist
-sudo tee /etc/modprobe.d/blacklist-nouveau.conf >/dev/null <<EOF
-blacklist nouveau
-options nouveau modeset=0
-EOF
-
-# initramfs'yi güncelle (nouveau kalıntılarını temizle)
-sudo update-initramfs -u
-
-# NVIDIA modülünü derle ve yükle
-sudo dkms autoinstall
-sudo depmod -a
-sudo modprobe nvidia || echo "⚠️ modprobe şimdi başarısız olabilir, reboot sonrası normalde düzelir (nouveau hâlâ aktif olabilir)."
+sudo dkms autoinstall && \
+sudo depmod -a && \
+sudo modprobe nvidia && \
+nvidia-smi
 
 # Kontrol
 echo "NVIDIA sürücü durumu:"
