@@ -1,155 +1,585 @@
+
 #!/bin/bash
 set -e
 
-# == Root kontrolü (script normal kullanıcı ile çalıştırılmalı) ==
-if [ "$EUID" -eq 0 ]; then
-    echo "❌ Bu script root olarak çalıştırılmamalıdır. Normal kullanıcı ile çalıştırın."
+# ============================================================
+# DEBIAN TRIXIE KURULUM / AYAR SCRIPTİ
+# GNOME - X11 / Wayland
+# ============================================================
+
+SCRIPT_PATH="$(realpath "$0")"
+RESUME_SERVICE="/etc/systemd/system/debian-setup-resume.service"
+RESUME_MARKER="/var/tmp/debian-setup-resume"
+
+# ============================================================
+# ROOT KONTROLÜ
+# ============================================================
+
+if [ "$EUID" -eq 0 ] && [ "${SETUP_RESUME:-0}" != "1" ]; then
+    echo "❌ Bu script root olarak çalıştırılmamalıdır."
+    echo "   Normal kullanıcı ile çalıştırın."
     exit 1
 fi
 
-echo "=============================="
-echo "== APT REPOLARI (contrib/non-free) =="
-echo "=============================="
+# ============================================================
+# KULLANICI
+# ============================================================
 
-# /etc/apt/sources.list içindeki 'main' içeren deb satırlarına contrib/non-free ekle
-# (idempotent: satırda zaten "contrib" yoksa ekle)
-sudo sed -i -E '/contrib/!s/^(deb .*)( main)(.*)$/\1\2 contrib non-free non-free-firmware\3/' /etc/apt/sources.list
-
-# 32-bit mimari desteği (Steam/Wine)
-sudo dpkg --add-architecture i386
-
-sudo apt update
-
-echo "=============================="
-echo "== GRUB PARAMETRELERİ EKLENİYOR =="
-echo "=============================="
-
-# idempotent: parametreler zaten varsa tekrar ekleme
-GRUB_EXTRA="acpi_backlight=native nvme_core.default_ps_max_latency_us=0 nvidia-drm.modeset=1"
-if ! grep -q "nvidia-drm.modeset=1" /etc/default/grub; then
-    sudo sed -i -E "s/GRUB_CMDLINE_LINUX_DEFAULT=\"(.*)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 ${GRUB_EXTRA}\"/" /etc/default/grub
+if [ "${SETUP_RESUME:-0}" = "1" ]; then
+    TARGET_USER="${SETUP_USER}"
 else
-    echo "GRUB parametreleri zaten mevcut, atlanıyor."
+    TARGET_USER="$USER"
 fi
-sudo update-grub
+
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+
+if [ -z "$TARGET_HOME" ]; then
+    echo "❌ Kullanıcının home dizini bulunamadı."
+    exit 1
+fi
+
+export HOME="$TARGET_HOME"
+export USER="$TARGET_USER"
+
+if [ "$EUID" -eq 0 ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+fi
+
+# ============================================================
+# REBOOT SONRASI DEVAM
+# ============================================================
+
+if [ "${SETUP_RESUME:-0}" = "1" ]; then
+
+    echo
+    echo "========================================"
+    echo "== KERNEL REBOOT SONRASI DEVAM EDİYOR =="
+    echo "========================================"
+    echo
+
+    echo "Aktif kernel:"
+    uname -r
+
+    rm -f "$RESUME_MARKER" 2>/dev/null || true
+fi
+
+# ============================================================
+# KERNEL KONTROLÜ
+# ============================================================
+
+if [ "${SETUP_RESUME:-0}" != "1" ] && [ ! -f "$RESUME_MARKER" ]; then
+
+    echo
+    echo "=============================="
+    echo "== KERNEL KONTROLÜ =="
+    echo "=============================="
+
+    echo "Mevcut kernel:"
+    uname -r
+
+    echo
+    echo "APT güncelleniyor..."
+
+    $SUDO apt update
+
+    echo
+    echo "Kernel güncellemesi kontrol ediliyor..."
+
+    KERNEL_UPDATE_AVAILABLE=0
+
+    if $SUDO apt-get -s install \
+        linux-image-amd64 \
+        linux-headers-amd64 2>/dev/null |
+        grep -E '^Inst linux-(image|headers)' >/dev/null; then
+
+        KERNEL_UPDATE_AVAILABLE=1
+    fi
+
+    if [ "$KERNEL_UPDATE_AVAILABLE" -eq 1 ]; then
+
+        echo
+        echo "🆕 Yeni kernel bulundu."
+        echo "Kernel ve header paketleri kuruluyor..."
+        echo
+
+        $SUDO apt-get install -y \
+            linux-image-amd64 \
+            linux-headers-amd64
+
+        echo
+        echo "✅ Yeni kernel kuruldu."
+
+        # ----------------------------------------------------
+        # RESUME MARKER
+        # ----------------------------------------------------
+
+        $SUDO touch "$RESUME_MARKER"
+
+        # ----------------------------------------------------
+        # SYSTEMD RESUME SERVICE
+        # ----------------------------------------------------
+
+        $SUDO tee "$RESUME_SERVICE" >/dev/null <<EOF
+[Unit]
+Description=Debian Setup Script - Resume After Kernel Reboot
+After=graphical.target
+Wants=graphical.target
+
+[Service]
+Type=oneshot
+Environment="SETUP_RESUME=1"
+Environment="SETUP_USER=$TARGET_USER"
+
+ExecStart=/bin/bash -c '
+USER_NAME="$TARGET_USER"
+SCRIPT="$SCRIPT_PATH"
+
+echo "GNOME oturumu bekleniyor..."
+
+# ============================================================
+# GNOME OTURUMUNU BUL
+# ============================================================
+
+while true; do
+
+    SESSION_ID=\$(loginctl list-sessions --no-legend 2>/dev/null |
+        awk -v u="\$USER_NAME" "\$3 == u {print \$1; exit}")
+
+    if [ -n "\$SESSION_ID" ]; then
+
+        SESSION_TYPE=\$(loginctl show-session "\$SESSION_ID" \
+            -p Type --value 2>/dev/null || true)
+
+        SESSION_STATE=\$(loginctl show-session "\$SESSION_ID" \
+            -p State --value 2>/dev/null || true)
+
+        SESSION_LEADER=\$(loginctl show-session "\$SESSION_ID" \
+            -p Leader --value 2>/dev/null || true)
+
+        if [ "\$SESSION_STATE" = "active" ] &&
+           { [ "\$SESSION_TYPE" = "x11" ] ||
+             [ "\$SESSION_TYPE" = "wayland" ]; } &&
+           [ -n "\$SESSION_LEADER" ]; then
+
+            break
+        fi
+    fi
+
+    sleep 2
+done
+
+echo "✅ GNOME oturumu bulundu."
+echo "Oturum tipi: \$SESSION_TYPE"
+
+# ============================================================
+# KULLANICI OTURUM ORTAMINI AL
+# ============================================================
+
+ENV_FILE="/proc/\$SESSION_LEADER/environ"
+
+DISPLAY_VALUE=""
+WAYLAND_VALUE=""
+DBUS_VALUE=""
+XAUTHORITY_VALUE=""
+XDG_CURRENT_DESKTOP_VALUE=""
+XDG_SESSION_DESKTOP_VALUE=""
+
+if [ -r "\$ENV_FILE" ]; then
+
+    DISPLAY_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
+        grep "^DISPLAY=" |
+        head -n1 |
+        cut -d= -f2- || true)
+
+    WAYLAND_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
+        grep "^WAYLAND_DISPLAY=" |
+        head -n1 |
+        cut -d= -f2- || true)
+
+    DBUS_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
+        grep "^DBUS_SESSION_BUS_ADDRESS=" |
+        head -n1 |
+        cut -d= -f2- || true)
+
+    XAUTHORITY_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
+        grep "^XAUTHORITY=" |
+        head -n1 |
+        cut -d= -f2- || true)
+
+    XDG_CURRENT_DESKTOP_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
+        grep "^XDG_CURRENT_DESKTOP=" |
+        head -n1 |
+        cut -d= -f2- || true)
+
+    XDG_SESSION_DESKTOP_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
+        grep "^XDG_SESSION_DESKTOP=" |
+        head -n1 |
+        cut -d= -f2- || true)
+
+fi
+
+RUNTIME_DIR="/run/user/\$(id -u "\$USER_NAME")"
+
+if [ -z "\$DBUS_VALUE" ]; then
+    DBUS_VALUE="unix:path=\$RUNTIME_DIR/bus"
+fi
+
+# ============================================================
+# GNOME TERMINAL AÇ
+# ============================================================
+
+echo "GNOME Terminal açılıyor..."
+
+runuser -u "\$USER_NAME" -- env \
+    HOME="/home/\$USER_NAME" \
+    USER="\$USER_NAME" \
+    LOGNAME="\$USER_NAME" \
+    XDG_RUNTIME_DIR="\$RUNTIME_DIR" \
+    DBUS_SESSION_BUS_ADDRESS="\$DBUS_VALUE" \
+    DISPLAY="\$DISPLAY_VALUE" \
+    WAYLAND_DISPLAY="\$WAYLAND_VALUE" \
+    XAUTHORITY="\$XAUTHORITY_VALUE" \
+    XDG_CURRENT_DESKTOP="\$XDG_CURRENT_DESKTOP_VALUE" \
+    XDG_SESSION_DESKTOP="\$XDG_SESSION_DESKTOP_VALUE" \
+    gnome-terminal --wait -- \
+    bash -c "
+        export SETUP_RESUME=1
+        export SETUP_USER='$USER_NAME'
+        export HOME='/home/$USER_NAME'
+        export USER='$USER_NAME'
+        export LOGNAME='$USER_NAME'
+
+        echo
+        echo '========================================'
+        echo '== DEBIAN SETUP RESUME =='
+        echo '========================================'
+        echo
+
+        bash '$SCRIPT'
+
+        RC=\\$?
+
+        echo
+        echo '========================================'
+
+        if [ \\$RC -eq 0 ]; then
+            echo '✅ SCRIPT BAŞARIYLA TAMAMLANDI'
+        else
+            echo \"❌ SCRIPT HATA İLE SONLANDI - Kod: \\$RC\"
+        fi
+
+        echo '========================================'
+        echo
+        read -n 1 -s -r -p 'Çıkmak için herhangi bir tuşa basın...'
+        echo
+
+        exit \\$RC
+    "
+
+exit \$?
+'
+
+[Install]
+WantedBy=graphical.target
+EOF
+
+        # ----------------------------------------------------
+        # SERVICE ENABLE
+        # ----------------------------------------------------
+
+        $SUDO systemctl daemon-reload
+        $SUDO systemctl enable debian-setup-resume.service
+
+        echo
+        echo "========================================"
+        echo "== YENİDEN BAŞLATILIYOR =="
+        echo "========================================"
+        echo
+        echo "✅ Yeni kernel kuruldu."
+        echo
+        echo "🔄 Sistem yeniden başlatılacak."
+        echo "🖥️  GNOME'a giriş yaptıktan sonra"
+        echo "    terminal otomatik açılacak."
+        echo
+        echo "▶️  Script kaldığı yerden devam edecek."
+        echo
+
+        $SUDO reboot
+        exit 0
+
+    else
+
+        echo
+        echo "✅ Yeni kernel bulunamadı."
+        echo "Mevcut kernel ile devam ediliyor."
+
+    fi
+fi
+
+# ============================================================
+# GRUB
+# ============================================================
 
 echo
-
 echo "=============================="
-echo "== GEREKSİZ BİLEŞENLER KALDIRILIYOR VE YENİ PAKETLER KURULUYOR =="
-echo "=============================="
-
-sudo systemctl disable NetworkManager-wait-online.service
-sudo apt purge -y thunderbird transmission-gtk warpinator rhythmbox 2>/dev/null || true
-sudo apt autoremove --purge -y
-
-sudo apt update
-sudo apt install -y numlockx fish steam-installer wine wine32 winetricks audacious btop rar unrar
-sudo apt install -y fastfetch || echo "⚠️ fastfetch kurulamadı (belki backports gerekir)."
-
-echo "=============================="
-echo "== NVIDIA SÜRÜCÜ KURULUMU =="
+echo "== GRUB AYARLARI =="
 echo "=============================="
 
-sudo apt install -y dkms build-essential linux-headers-$(uname -r)
-sudo apt install -y nvidia-driver nvidia-settings
-sudo dkms autoinstall && \
-sudo depmod -a && \
-sudo modprobe nvidia && \
-nvidia-smi
+GRUB_EXTRA="acpi_backlight=native nvme_core.default_ps_max_latency_us=0"
 
-# Kontrol
-echo "NVIDIA sürücü durumu:"
-if nvidia-smi; then
-    echo "✅ NVIDIA sürücüsü başarıyla yüklendi ve çalışıyor."
+# GRUB_TIMEOUT=0
+if grep -q '^GRUB_TIMEOUT=' /etc/default/grub; then
+
+    $SUDO sed -i \
+        's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' \
+        /etc/default/grub
+
 else
-    echo "⚠️ nvidia-smi çalıştırılamadı. Bu genellikle reboot sonrası düzelir."
-    echo "   Sistemi yeniden başlattıktan sonra tekrar deneyin."
+
+    echo 'GRUB_TIMEOUT=0' |
+        $SUDO tee -a /etc/default/grub >/dev/null
+
 fi
 
+# Kernel parametreleri
+for PARAM in $GRUB_EXTRA; do
+
+    if ! grep -q "$PARAM" /etc/default/grub; then
+
+        $SUDO sed -i \
+            "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $PARAM\"|" \
+            /etc/default/grub
+
+    fi
+
+done
+
+$SUDO update-grub
+
+echo
+echo "GRUB_TIMEOUT:"
+grep '^GRUB_TIMEOUT=' /etc/default/grub
+
+echo
+echo "GRUB kernel parametreleri:"
+grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub
+
+# ============================================================
+# GEREKSİZ PAKETLER
+# ============================================================
+
+echo
 echo "=============================="
-echo "== SHELL AYARLANIYOR =="
+echo "== GEREKSİZ PAKETLER =="
 echo "=============================="
 
-sudo chsh -s /usr/bin/fish "$USER"
+$SUDO systemctl disable \
+    NetworkManager-wait-online.service \
+    2>/dev/null || true
 
-curl -sS https://starship.rs/install.sh | sh -s -- -y
+$SUDO apt purge -y \
+    thunderbird \
+    transmission-gtk \
+    warpinator \
+    rhythmbox \
+    2>/dev/null || true
 
+$SUDO apt autoremove --purge -y
+
+# ============================================================
+# TEMEL PAKETLER
+# ============================================================
+
+echo
 echo "=============================="
-echo "== FlatPak Uygulamaları =="
-echo "=============================="
-
-sudo apt install -y flatpak
-sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-
-sudo flatpak install flathub -y \
-org.kde.kdenlive \
-app.zen_browser.zen \
-org.audacityteam.Audacity \
-org.nickvision.tubeconverter \
-org.onlyoffice.desktopeditors \
-net.davidotek.pupgui2 \
-com.google.AndroidStudio \
-com.heroicgameslauncher.hgl
-
-
-echo "=============================="
-echo "== Winetricks Kurulumları =="
+echo "== TEMEL PAKETLER =="
 echo "=============================="
 
-winetricks -q dotnet40 dotnet45 dotnet48 vcrun2022 vcrun6sp6 allfonts dxvk2030
+$SUDO apt update
 
-echo "==> zRAM, Swap ve Swappiness ayarlanıyor..."
+$SUDO apt install -y \
+    numlockx \
+    fish \
+    steam-installer \
+    wine \
+    wine32 \
+    winetricks \
+    audacious \
+    btop \
+    rar \
+    unrar \
+    unzip \
+    curl
 
-sudo apt install -y zram-tools
+$SUDO apt install -y fastfetch ||
+    echo "⚠️ fastfetch kurulamadı."
 
-sudo tee /etc/default/zramswap >/dev/null <<EOF
+# ============================================================
+# NVIDIA
+# ============================================================
+
+echo
+echo "=============================="
+echo "== NVIDIA SÜRÜCÜSÜ =="
+echo "=============================="
+
+$SUDO apt install -y \
+    dkms \
+    build-essential \
+    linux-headers-$(uname -r)
+
+$SUDO apt install -y \
+    nvidia-driver \
+    nvidia-settings
+
+echo
+echo "DKMS çalıştırılıyor..."
+
+$SUDO dkms autoinstall || true
+$SUDO depmod -a
+
+if $SUDO modprobe nvidia 2>/dev/null; then
+    echo "✅ NVIDIA kernel modülü yüklendi."
+else
+    echo "⚠️ NVIDIA modülü şu anda yüklenemedi."
+fi
+
+echo
+echo "NVIDIA durumu:"
+
+if nvidia-smi; then
+    echo "✅ NVIDIA sürücüsü çalışıyor."
+else
+    echo "⚠️ nvidia-smi şu anda çalışmıyor."
+    echo "   Bu durum reboot sonrası değişebilir."
+fi
+
+# ============================================================
+# FISH
+# ============================================================
+
+echo
+echo "=============================="
+echo "== FISH =="
+echo "=============================="
+
+$SUDO chsh -s /usr/bin/fish "$TARGET_USER"
+
+curl -sS https://starship.rs/install.sh |
+    sh -s -- -y
+
+# ============================================================
+# FLATPAK
+# ============================================================
+
+echo
+echo "=============================="
+echo "== FLATPAK =="
+echo "=============================="
+
+$SUDO apt install -y flatpak
+
+$SUDO flatpak remote-add \
+    --if-not-exists \
+    flathub \
+    https://flathub.org/repo/flathub.flatpakrepo
+
+$SUDO flatpak install flathub -y \
+    org.kde.kdenlive \
+    app.zen_browser.zen \
+    org.audacityteam.Audacity \
+    org.nickvision.tubeconverter \
+    org.onlyoffice.desktopeditors \
+    net.davidotek.pupgui2 \
+    com.google.AndroidStudio \
+    com.heroicgameslauncher.hgl
+
+# ============================================================
+# WINETRICKS
+# ============================================================
+
+echo
+echo "=============================="
+echo "== WINETRICKS =="
+echo "=============================="
+
+winetricks -q \
+    dotnet40 \
+    dotnet45 \
+    dotnet48 \
+    vcrun2022 \
+    vcrun6sp6 \
+    allfonts \
+    dxvk2030
+
+# ============================================================
+# zRAM / SWAP
+# ============================================================
+
+echo
+echo "=============================="
+echo "== zRAM / SWAP =="
+echo "=============================="
+
+$SUDO apt install -y zram-tools
+
+$SUDO tee /etc/default/zramswap >/dev/null <<EOF
 ALGO=zstd
 PERCENT=50
 PRIORITY=100
 EOF
 
-sudo systemctl enable zramswap
-sudo systemctl restart zramswap
+$SUDO systemctl enable zramswap
+$SUDO systemctl restart zramswap
 
-sudo swapoff /swapfile 2>/dev/null || true
-sudo rm -f /swapfile
-sudo fallocate -l 4G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
+$SUDO swapoff /swapfile 2>/dev/null || true
+$SUDO rm -f /swapfile
 
-sudo sed -i '\|^/swapfile|d' /etc/fstab
-echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+$SUDO fallocate -l 4G /swapfile
+$SUDO chmod 600 /swapfile
+$SUDO mkswap /swapfile
+$SUDO swapon /swapfile
 
-echo "vm.swappiness=4" | sudo tee /etc/sysctl.d/99-swappiness.conf >/dev/null
-sudo sysctl --system
+$SUDO sed -i '\|^/swapfile|d' /etc/fstab
+
+echo "/swapfile none swap sw 0 0" |
+    $SUDO tee -a /etc/fstab >/dev/null
+
+echo "vm.swappiness=4" |
+    $SUDO tee /etc/sysctl.d/99-swappiness.conf >/dev/null
+
+$SUDO sysctl --system
 
 echo
-echo "✅ Ayarlar tamamlandı."
-echo
-
 echo "Bellek durumu:"
-sudo free -h
+$SUDO free -h
 
 echo
-echo "Aktif swap alanları:"
-sudo swapon --show
+echo "Aktif swap:"
+$SUDO swapon --show
 
 echo
-echo "zRAM durumu:"
-sudo zramctl
+echo "zRAM:"
+$SUDO zramctl
 
 echo
-echo "Swappiness değeri:"
+echo "Swappiness:"
 cat /proc/sys/vm/swappiness
+
+# ============================================================
+# FISH CONFIG
+# ============================================================
+
 echo
+echo "=============================="
+echo "== FISH YAPILANDIRMASI =="
+echo "=============================="
 
-echo "Fish yapılandırılıyor..."
+mkdir -p "$HOME/.config/fish"
 
-mkdir -p ~/.config/fish
-
-cat > ~/.config/fish/config.fish <<'EOF'
+cat > "$HOME/.config/fish/config.fish" <<'EOF'
 if status is-interactive
     echo " "
     set_color normal
@@ -169,25 +599,44 @@ alias kapa='poweroff'
 alias söyle='echo'
 EOF
 
+# ============================================================
+# JETBRAINS MONO NERD FONT
+# ============================================================
+
 echo
-
-echo "Fastfetch yapılandırılıyor..."
-
 echo "=============================="
-echo "== JetBrainsMono Nerd Font ==">
+echo "== JetBrainsMono Nerd Font =="
 echo "=============================="
 
-mkdir -p ~/.local/share/fonts
-curl -sSL -o /tmp/JetBrainsMono.zip https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip
-unzip -o /tmp/JetBrainsMono.zip -d ~/.local/share/fonts
-rm /tmp/JetBrainsMono.zip
+mkdir -p "$HOME/.local/share/fonts"
+
+curl -sSL \
+    -o /tmp/JetBrainsMono.zip \
+    https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip
+
+unzip -o \
+    /tmp/JetBrainsMono.zip \
+    -d "$HOME/.local/share/fonts"
+
+rm -f /tmp/JetBrainsMono.zip
+
 fc-cache -fv
 
-mkdir -p ~/.config/fastfetch
+# ============================================================
+# FASTFETCH
+# ============================================================
 
-cat > ~/.config/fastfetch/config.jsonc <<'EOF'
+echo
+echo "=============================="
+echo "== FASTFETCH =="
+echo "=============================="
+
+mkdir -p "$HOME/.config/fastfetch"
+
+cat > "$HOME/.config/fastfetch/config.jsonc" <<'EOF'
 {
   "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/master/doc/json_schema.json",
+
   "display": {
     "key": {
       "width": 10
@@ -197,59 +646,70 @@ cat > ~/.config/fastfetch/config.jsonc <<'EOF'
     },
     "separator": ""
   },
+
   "logo": {
     "type": "kitty-direct",
     "source": "~/.config/fastfetch/marin.png",
     "width": 20,
     "height": 10
   },
+
   "modules": [
     "break",
+
     {
       "type": "os",
       "key": "is",
       "keyColor": "yellow",
       "format": "{name}"
     },
+
     {
       "type": "kernel",
       "key": "lnx",
       "keyColor": "green"
     },
+
     {
       "type": "packages",
       "key": "pkgs",
       "keyColor": "cyan"
     },
+
     {
       "type": "uptime",
       "key": "çs",
       "keyColor": "green"
     },
+
     {
       "type": "cpu",
       "key": "mib",
       "keyColor": "red",
       "format": "{name}"
     },
+
     {
       "type": "gpu",
       "key": "gib",
       "keyColor": "red",
       "format": "{name}"
     },
+
     {
       "type": "memory",
       "key": "ram",
       "keyColor": "yellow",
       "format": "{used} / {total}"
     },
+
     {
       "type": "swap",
       "key": "swp-zram",
       "keyColor": "yellow",
       "format": "{used} / {total}"
     },
+
     {
       "type": "disk",
       "key": "dep",
@@ -259,7 +719,9 @@ cat > ~/.config/fastfetch/config.jsonc <<'EOF'
       ],
       "format": "{size-used} / {size-total}"
     },
+
     "break",
+
     {
       "type": "custom",
       "format": "\u001b[33m󰮯 \u001b[32m󰊠 \u001b[34m󰊠 \u001b[31m󰊠 \u001b[36m󰊠 \u001b[35m󰊠 \u001b[37m󰊠 \u001b[97m󰊠"
@@ -268,15 +730,67 @@ cat > ~/.config/fastfetch/config.jsonc <<'EOF'
 }
 EOF
 
-echo
+# ============================================================
+# RESUME SERVICE TEMİZLİĞİ
+# ============================================================
 
-echo "=============================="
-echo "== BİTTİ =="
-echo "=============================="
+if [ "${SETUP_RESUME:-0}" = "1" ]; then
 
-echo "✅ Her şey tamam!"
-echo "⚠️  NVIDIA sürücüleri kuruldu. Eğer Secure Boot etkinse, yeniden başlatmada modülü imzalamanız gerekebilir."
-echo "   (MOK yönetimi için ekranınızdaki talimatları izleyin.)"
-echo "   Ayrıca nvidia-smi ile sürücünün çalıştığını kontrol edebilirsiniz."
+    echo
+    echo "=============================="
+    echo "== RESUME SERVICE TEMİZLENİYOR =="
+    echo "=============================="
+
+    $SUDO systemctl disable \
+        debian-setup-resume.service \
+        2>/dev/null || true
+
+    $SUDO rm -f "$RESUME_SERVICE"
+    $SUDO rm -f "$RESUME_MARKER"
+
+    $SUDO systemctl daemon-reload
+
+    echo "✅ Resume service silindi."
+    echo "✅ Bir daha otomatik çalışmayacak."
+
+fi
+
+# ============================================================
+# BİTİŞ
+# ============================================================
+
 echo
-echo "🔄 Sistemi şimdi yeniden başlatın: sudo reboot"
+echo
+echo "========================================"
+echo "==              BİTTİ                  =="
+echo "========================================"
+echo
+echo "✅ Tüm ayarlar tamamlandı."
+echo
+echo "Kernel:"
+uname -r
+
+echo
+echo "NVIDIA:"
+nvidia-smi 2>/dev/null ||
+    echo "⚠️ nvidia-smi şu anda çalışmıyor."
+
+echo
+echo "GRUB:"
+grep '^GRUB_TIMEOUT=' /etc/default/grub
+grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub
+
+echo
+echo "========================================"
+echo "==        HER ŞEY TAMAMLANDI          =="
+echo "========================================"
+echo
+echo "Çıkmak için herhangi bir tuşa basın..."
+
+if [ -t 0 ]; then
+    read -n 1 -s -r
+    echo
+fi
+
+exit 0
+
