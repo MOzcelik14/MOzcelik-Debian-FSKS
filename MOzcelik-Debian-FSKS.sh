@@ -1,4 +1,3 @@
-
 #!/bin/bash
 set -e
 
@@ -64,6 +63,75 @@ if [ "${SETUP_RESUME:-0}" = "1" ]; then
 
     rm -f "$RESUME_MARKER" 2>/dev/null || true
 fi
+
+# ============================================================
+# DEBIAN REPOSITORY
+# ============================================================
+
+echo
+echo "=============================="
+echo "== DEBIAN REPOSITORY =="
+echo "=============================="
+
+# ------------------------------------------------------------
+# debian.sources (deb822) varsa Components satırını düzenle
+# ------------------------------------------------------------
+
+if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+
+    $SUDO awk '
+    /^Components:/ {
+        if ($0 !~ /(^| )contrib( |$)/)
+            $0 = $0 " contrib"
+
+        if ($0 !~ /(^| )non-free( |$)/)
+            $0 = $0 " non-free"
+
+        if ($0 !~ /(^| )non-free-firmware( |$)/)
+            $0 = $0 " non-free-firmware"
+    }
+    { print }
+    ' /etc/apt/sources.list.d/debian.sources |
+    $SUDO tee /tmp/debian.sources.new >/dev/null
+
+    $SUDO mv /tmp/debian.sources.new \
+        /etc/apt/sources.list.d/debian.sources
+
+    echo "✅ debian.sources güncellendi."
+
+fi
+
+# ------------------------------------------------------------
+# Eski sources.list formatı varsa deb satırlarını düzenle
+# ------------------------------------------------------------
+
+if [ -f /etc/apt/sources.list ]; then
+
+    $SUDO awk '
+    /^deb / {
+        if ($0 !~ /(^| )contrib( |$)/)
+            $0 = $0 " contrib"
+
+        if ($0 !~ /(^| )non-free( |$)/)
+            $0 = $0 " non-free"
+
+        if ($0 !~ /(^| )non-free-firmware( |$)/)
+            $0 = $0 " non-free-firmware"
+    }
+    { print }
+    ' /etc/apt/sources.list |
+    $SUDO tee /tmp/sources.list.new >/dev/null
+
+    $SUDO mv /tmp/sources.list.new \
+        /etc/apt/sources.list
+
+    echo "✅ sources.list güncellendi."
+
+fi
+
+echo
+echo "APT kaynakları:"
+$SUDO apt update
 
 # ============================================================
 # KERNEL KONTROLÜ
@@ -246,10 +314,10 @@ runuser -u "\$USER_NAME" -- env \
     gnome-terminal --wait -- \
     bash -c "
         export SETUP_RESUME=1
-        export SETUP_USER='$USER_NAME'
-        export HOME='/home/$USER_NAME'
-        export USER='$USER_NAME'
-        export LOGNAME='$USER_NAME'
+        export SETUP_USER='\$USER_NAME'
+        export HOME='/home/\$USER_NAME'
+        export USER='\$USER_NAME'
+        export LOGNAME='\$USER_NAME'
 
         echo
         echo '========================================'
@@ -257,17 +325,17 @@ runuser -u "\$USER_NAME" -- env \
         echo '========================================'
         echo
 
-        bash '$SCRIPT'
+        bash '\$SCRIPT'
 
-        RC=\\$?
+        RC=\\\$?
 
         echo
         echo '========================================'
 
-        if [ \\$RC -eq 0 ]; then
+        if [ \\\$RC -eq 0 ]; then
             echo '✅ SCRIPT BAŞARIYLA TAMAMLANDI'
         else
-            echo \"❌ SCRIPT HATA İLE SONLANDI - Kod: \\$RC\"
+            echo \"❌ SCRIPT HATA İLE SONLANDI - Kod: \\\$RC\"
         fi
 
         echo '========================================'
@@ -275,7 +343,7 @@ runuser -u "\$USER_NAME" -- env \
         read -n 1 -s -r -p 'Çıkmak için herhangi bir tuşa basın...'
         echo
 
-        exit \\$RC
+        exit \\\$RC
     "
 
 exit \$?
@@ -793,4 +861,3 @@ if [ -t 0 ]; then
 fi
 
 exit 0
-
