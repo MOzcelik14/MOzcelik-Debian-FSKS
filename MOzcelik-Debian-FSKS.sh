@@ -303,53 +303,71 @@ echo "=============================="
 echo "== NVIDIA SÜRÜCÜSÜ =="
 echo "=============================="
 
-$SUDO apt install -y \
-    dkms \
-    build-essential
+# ============================================================
+# NVIDIA DONANIM KONTROLÜ
+# ============================================================
 
-echo
-echo "Kurulu kernel'lerin header'ları kontrol ediliyor..."
+if lspci | grep -qi "NVIDIA"; then
 
-for KERNEL in /lib/modules/*; do
+    echo "✅ NVIDIA GPU tespit edildi."
+    echo "NVIDIA sürücüsü kurulumu başlatılıyor..."
 
-    KERNEL_VERSION="$(basename "$KERNEL")"
+    $SUDO apt-get install -y \
+        dkms \
+        build-essential
 
-    if [ -f "$KERNEL/build/Makefile" ]; then
-        echo "✅ Header mevcut: $KERNEL_VERSION"
+    echo
+    echo "Kurulu kernel'lerin header'ları kontrol ediliyor..."
+
+    for KERNEL in /lib/modules/*; do
+
+        KERNEL_VERSION="$(basename "$KERNEL")"
+
+        if [ -f "$KERNEL/build/Makefile" ]; then
+            echo "✅ Header mevcut: $KERNEL_VERSION"
+        else
+            echo "🆕 Header eksik: $KERNEL_VERSION"
+
+            $SUDO apt-get install -y \
+                -t trixie-backports \
+                "linux-headers-$KERNEL_VERSION"
+        fi
+
+    done
+
+    echo
+    echo "NVIDIA sürücüsü kuruluyor..."
+    echo "Kaynak: trixie-backports"
+
+    $SUDO apt-get install -y \
+        -t trixie-backports \
+        nvidia-driver \
+        nvidia-settings \
+        nvidia-kernel-dkms
+
+    echo
+    echo "DKMS tüm kurulu kernel'ler için çalıştırılıyor..."
+
+    $SUDO dkms autoinstall || true
+
+    $SUDO depmod -a
+
+    echo
+    echo "Aktif kernel:"
+    uname -r
+
+    if $SUDO modprobe nvidia 2>/dev/null; then
+        echo "✅ NVIDIA kernel modülü yüklendi."
     else
-        echo "🆕 Header eksik: $KERNEL_VERSION"
-        $SUDO apt-get install -y \
-            -t trixie-backports \
-            "linux-headers-$KERNEL_VERSION"
+        echo "⚠️ NVIDIA modülü şu anda yüklenemedi."
     fi
 
-done
-
-echo
-echo "NVIDIA sürücüsü kuruluyor..."
-echo "Kaynak: trixie-backports"
-
-$SUDO apt-get install -y \
-    -t trixie-backports \
-    nvidia-driver \
-    nvidia-settings \
-    nvidia-kernel-dkms
-
-echo
-echo "DKMS tüm kurulu kernel'ler için çalıştırılıyor..."
-
-$SUDO dkms autoinstall || true
-
-$SUDO depmod -a
-
-echo
-echo "Aktif kernel:"
-uname -r
-
-if $SUDO modprobe nvidia 2>/dev/null; then
-    echo "✅ NVIDIA kernel modülü yüklendi."
 else
-    echo "⚠️ NVIDIA modülü şu anda yüklenemedi."
+
+    echo "ℹ️ NVIDIA GPU tespit edilmedi."
+    echo "ℹ️ Sanal makine / NVIDIA'sız sistem olduğu varsayılıyor."
+    echo "⏭️ NVIDIA sürücüsü kurulumu atlanıyor."
+
 fi
 
 # ============================================================
