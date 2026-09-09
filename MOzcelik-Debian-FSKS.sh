@@ -495,33 +495,46 @@ echo "=============================="
 
 $SUDO apt install -y \
     dkms \
-    build-essential \
-    linux-headers-$(uname -r)
+    build-essential
+
+echo
+echo "Kurulu kernel'lerin header'ları kontrol ediliyor..."
+
+for KERNEL in /lib/modules/*; do
+
+    KERNEL_VERSION="$(basename "$KERNEL")"
+
+    if [ -f "$KERNEL/build/Makefile" ]; then
+        echo "✅ Header mevcut: $KERNEL_VERSION"
+    else
+        echo "🆕 Header eksik: $KERNEL_VERSION"
+        $SUDO apt install -y "linux-headers-$KERNEL_VERSION"
+    fi
+
+done
+
+echo
+echo "NVIDIA sürücüsü kuruluyor..."
 
 $SUDO apt install -y \
     nvidia-driver \
     nvidia-settings
 
 echo
-echo "DKMS çalıştırılıyor..."
+echo "DKMS tüm kurulu kernel'ler için çalıştırılıyor..."
 
 $SUDO dkms autoinstall || true
+
 $SUDO depmod -a
+
+echo
+echo "Aktif kernel:"
+uname -r
 
 if $SUDO modprobe nvidia 2>/dev/null; then
     echo "✅ NVIDIA kernel modülü yüklendi."
 else
     echo "⚠️ NVIDIA modülü şu anda yüklenemedi."
-fi
-
-echo
-echo "NVIDIA durumu:"
-
-if nvidia-smi; then
-    echo "✅ NVIDIA sürücüsü çalışıyor."
-else
-    echo "⚠️ nvidia-smi şu anda çalışmıyor."
-    echo "   Bu durum reboot sonrası değişebilir."
 fi
 
 # ============================================================
