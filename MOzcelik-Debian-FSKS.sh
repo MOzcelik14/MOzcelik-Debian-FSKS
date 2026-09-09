@@ -448,19 +448,6 @@ EOF
 $SUDO systemctl enable zramswap
 $SUDO systemctl restart zramswap
 
-$SUDO swapoff /swapfile 2>/dev/null || true
-$SUDO rm -f /swapfile
-
-$SUDO fallocate -l 4G /swapfile
-$SUDO chmod 600 /swapfile
-$SUDO mkswap /swapfile
-$SUDO swapon /swapfile
-
-$SUDO sed -i '\|^/swapfile|d' /etc/fstab
-
-echo "/swapfile none swap sw 0 0" |
-    $SUDO tee -a /etc/fstab >/dev/null
-
 echo "vm.swappiness=4" |
     $SUDO tee /etc/sysctl.d/99-swappiness.conf >/dev/null
 
