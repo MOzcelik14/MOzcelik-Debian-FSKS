@@ -2,8 +2,7 @@
 set -e
 
 # ============================================================
-# DEBIAN TRIXIE KURULUM / AYAR SCRIPTİ
-# GNOME - X11 / Wayland
+# DEBIAN TRIXIE KURULUM / AYAR SCRIPTI
 # ============================================================
 
 SCRIPT_PATH="$(realpath "$0")"
@@ -508,17 +507,22 @@ for KERNEL in /lib/modules/*; do
         echo "✅ Header mevcut: $KERNEL_VERSION"
     else
         echo "🆕 Header eksik: $KERNEL_VERSION"
-        $SUDO apt install -y "linux-headers-$KERNEL_VERSION"
+        $SUDO apt-get install -y \
+            -t trixie-backports \
+            "linux-headers-$KERNEL_VERSION"
     fi
 
 done
 
 echo
 echo "NVIDIA sürücüsü kuruluyor..."
+echo "Kaynak: trixie-backports"
 
-$SUDO apt install -y \
+$SUDO apt-get install -y \
+    -t trixie-backports \
     nvidia-driver \
-    nvidia-settings
+    nvidia-settings \
+    nvidia-kernel-dkms
 
 echo
 echo "DKMS tüm kurulu kernel'ler için çalıştırılıyor..."
