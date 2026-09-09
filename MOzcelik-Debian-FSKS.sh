@@ -2,33 +2,26 @@
 set -e
 
 # ============================================================
-# DEBIAN TRIXIE KURULUM / AYAR SCRIPTI
+# DEBIAN TRIXIE KURULUM / AYAR SCRIPTİ
+# GNOME - X11 / Wayland
+# (tek geçişli: kernel güncellemesi varsa kurar, reboot sonrası
+#  script'i elle tekrar çalıştırman yeterli — otomatik terminal
+#  açma / systemd resume mekanizması kaldırıldı)
 # ============================================================
 
 SCRIPT_PATH="$(realpath "$0")"
-RESUME_SERVICE="/etc/systemd/system/debian-setup-resume.service"
-RESUME_MARKER="/var/tmp/debian-setup-resume"
 
 # ============================================================
 # ROOT KONTROLÜ
 # ============================================================
 
-if [ "$EUID" -eq 0 ] && [ "${SETUP_RESUME:-0}" != "1" ]; then
+if [ "$EUID" -eq 0 ]; then
     echo "❌ Bu script root olarak çalıştırılmamalıdır."
     echo "   Normal kullanıcı ile çalıştırın."
     exit 1
 fi
 
-# ============================================================
-# KULLANICI
-# ============================================================
-
-if [ "${SETUP_RESUME:-0}" = "1" ]; then
-    TARGET_USER="${SETUP_USER}"
-else
-    TARGET_USER="$USER"
-fi
-
+TARGET_USER="$USER"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 
 if [ -z "$TARGET_HOME" ]; then
@@ -39,29 +32,7 @@ fi
 export HOME="$TARGET_HOME"
 export USER="$TARGET_USER"
 
-if [ "$EUID" -eq 0 ]; then
-    SUDO=""
-else
-    SUDO="sudo"
-fi
-
-# ============================================================
-# REBOOT SONRASI DEVAM
-# ============================================================
-
-if [ "${SETUP_RESUME:-0}" = "1" ]; then
-
-    echo
-    echo "========================================"
-    echo "== KERNEL REBOOT SONRASI DEVAM EDİYOR =="
-    echo "========================================"
-    echo
-
-    echo "Aktif kernel:"
-    uname -r
-
-    rm -f "$RESUME_MARKER" 2>/dev/null || true
-fi
+SUDO="sudo"
 
 # ============================================================
 # DEBIAN REPOSITORY
@@ -136,253 +107,73 @@ $SUDO apt update
 # KERNEL KONTROLÜ
 # ============================================================
 
-if [ "${SETUP_RESUME:-0}" != "1" ] && [ ! -f "$RESUME_MARKER" ]; then
+echo
+echo "=============================="
+echo "== KERNEL KONTROLÜ =="
+echo "=============================="
+
+echo "Mevcut kernel:"
+uname -r
+
+echo
+echo "APT güncelleniyor..."
+
+$SUDO apt update
+
+echo
+echo "Kernel güncellemesi kontrol ediliyor..."
+
+KERNEL_UPDATE_AVAILABLE=0
+
+if $SUDO apt-get -s install \
+    -t trixie-backports \
+    linux-image-amd64 \
+    linux-headers-amd64 2>/dev/null |
+    grep -E '^Inst linux-(image|headers)' >/dev/null; then
+
+    KERNEL_UPDATE_AVAILABLE=1
+fi
+
+if [ "$KERNEL_UPDATE_AVAILABLE" -eq 1 ]; then
 
     echo
-    echo "=============================="
-    echo "== KERNEL KONTROLÜ =="
-    echo "=============================="
-
-    echo "Mevcut kernel:"
-    uname -r
-
+    echo "🆕 Yeni kernel bulundu (trixie-backports)."
+    echo "Kernel ve header paketleri kuruluyor..."
     echo
-    echo "APT güncelleniyor..."
 
-    $SUDO apt update
-
-    echo
-    echo "Kernel güncellemesi kontrol ediliyor..."
-
-    KERNEL_UPDATE_AVAILABLE=0
-
-    if $SUDO apt-get -s install \
+    $SUDO apt-get install -y \
+        -t trixie-backports \
         linux-image-amd64 \
-        linux-headers-amd64 2>/dev/null |
-        grep -E '^Inst linux-(image|headers)' >/dev/null; then
+        linux-headers-amd64
 
-        KERNEL_UPDATE_AVAILABLE=1
-    fi
+    echo
+    echo "✅ Yeni kernel kuruldu."
+    echo
+    echo "========================================"
+    echo "== YENİDEN BAŞLATMA GEREKİYOR =="
+    echo "========================================"
+    echo
+    echo "🔄 Yeni kernel'in aktif olması için sistemi"
+    echo "   yeniden başlatman gerekiyor."
+    echo
+    echo "▶️  Yeniden başlattıktan sonra bu script'i"
+    echo "    tekrar çalıştır:"
+    echo
+    echo "    $SCRIPT_PATH"
+    echo
+    echo "    (kernel artık güncel olduğu için bu adım"
+    echo "     atlanacak ve script GRUB ayarlarından"
+    echo "     devam edecek.)"
+    echo
 
-    if [ "$KERNEL_UPDATE_AVAILABLE" -eq 1 ]; then
+    exit 0
 
-        echo
-        echo "🆕 Yeni kernel bulundu."
-        echo "Kernel ve header paketleri kuruluyor..."
-        echo
+else
 
-        $SUDO apt-get install -y \
-            linux-image-amd64 \
-            linux-headers-amd64
+    echo
+    echo "✅ Yeni kernel bulunamadı."
+    echo "Mevcut kernel ile devam ediliyor."
 
-        echo
-        echo "✅ Yeni kernel kuruldu."
-
-        # ----------------------------------------------------
-        # RESUME MARKER
-        # ----------------------------------------------------
-
-        $SUDO touch "$RESUME_MARKER"
-
-        # ----------------------------------------------------
-        # SYSTEMD RESUME SERVICE
-        # ----------------------------------------------------
-
-        $SUDO tee "$RESUME_SERVICE" >/dev/null <<EOF
-[Unit]
-Description=Debian Setup Script - Resume After Kernel Reboot
-After=graphical.target
-Wants=graphical.target
-
-[Service]
-Type=oneshot
-Environment="SETUP_RESUME=1"
-Environment="SETUP_USER=$TARGET_USER"
-
-ExecStart=/bin/bash -c '
-USER_NAME="$TARGET_USER"
-SCRIPT="$SCRIPT_PATH"
-
-echo "GNOME oturumu bekleniyor..."
-
-# ============================================================
-# GNOME OTURUMUNU BUL
-# ============================================================
-
-while true; do
-
-    SESSION_ID=\$(loginctl list-sessions --no-legend 2>/dev/null |
-        awk -v u="\$USER_NAME" "\$3 == u {print \$1; exit}")
-
-    if [ -n "\$SESSION_ID" ]; then
-
-        SESSION_TYPE=\$(loginctl show-session "\$SESSION_ID" \
-            -p Type --value 2>/dev/null || true)
-
-        SESSION_STATE=\$(loginctl show-session "\$SESSION_ID" \
-            -p State --value 2>/dev/null || true)
-
-        SESSION_LEADER=\$(loginctl show-session "\$SESSION_ID" \
-            -p Leader --value 2>/dev/null || true)
-
-        if [ "\$SESSION_STATE" = "active" ] &&
-           { [ "\$SESSION_TYPE" = "x11" ] ||
-             [ "\$SESSION_TYPE" = "wayland" ]; } &&
-           [ -n "\$SESSION_LEADER" ]; then
-
-            break
-        fi
-    fi
-
-    sleep 2
-done
-
-echo "✅ GNOME oturumu bulundu."
-echo "Oturum tipi: \$SESSION_TYPE"
-
-# ============================================================
-# KULLANICI OTURUM ORTAMINI AL
-# ============================================================
-
-ENV_FILE="/proc/\$SESSION_LEADER/environ"
-
-DISPLAY_VALUE=""
-WAYLAND_VALUE=""
-DBUS_VALUE=""
-XAUTHORITY_VALUE=""
-XDG_CURRENT_DESKTOP_VALUE=""
-XDG_SESSION_DESKTOP_VALUE=""
-
-if [ -r "\$ENV_FILE" ]; then
-
-    DISPLAY_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
-        grep "^DISPLAY=" |
-        head -n1 |
-        cut -d= -f2- || true)
-
-    WAYLAND_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
-        grep "^WAYLAND_DISPLAY=" |
-        head -n1 |
-        cut -d= -f2- || true)
-
-    DBUS_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
-        grep "^DBUS_SESSION_BUS_ADDRESS=" |
-        head -n1 |
-        cut -d= -f2- || true)
-
-    XAUTHORITY_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
-        grep "^XAUTHORITY=" |
-        head -n1 |
-        cut -d= -f2- || true)
-
-    XDG_CURRENT_DESKTOP_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
-        grep "^XDG_CURRENT_DESKTOP=" |
-        head -n1 |
-        cut -d= -f2- || true)
-
-    XDG_SESSION_DESKTOP_VALUE=\$(tr "\\0" "\\n" < "\$ENV_FILE" |
-        grep "^XDG_SESSION_DESKTOP=" |
-        head -n1 |
-        cut -d= -f2- || true)
-
-fi
-
-RUNTIME_DIR="/run/user/\$(id -u "\$USER_NAME")"
-
-if [ -z "\$DBUS_VALUE" ]; then
-    DBUS_VALUE="unix:path=\$RUNTIME_DIR/bus"
-fi
-
-# ============================================================
-# GNOME TERMINAL AÇ
-# ============================================================
-
-echo "GNOME Terminal açılıyor..."
-
-runuser -u "\$USER_NAME" -- env \
-    HOME="/home/\$USER_NAME" \
-    USER="\$USER_NAME" \
-    LOGNAME="\$USER_NAME" \
-    XDG_RUNTIME_DIR="\$RUNTIME_DIR" \
-    DBUS_SESSION_BUS_ADDRESS="\$DBUS_VALUE" \
-    DISPLAY="\$DISPLAY_VALUE" \
-    WAYLAND_DISPLAY="\$WAYLAND_VALUE" \
-    XAUTHORITY="\$XAUTHORITY_VALUE" \
-    XDG_CURRENT_DESKTOP="\$XDG_CURRENT_DESKTOP_VALUE" \
-    XDG_SESSION_DESKTOP="\$XDG_SESSION_DESKTOP_VALUE" \
-    gnome-terminal --wait -- \
-    bash -c "
-        export SETUP_RESUME=1
-        export SETUP_USER='\$USER_NAME'
-        export HOME='/home/\$USER_NAME'
-        export USER='\$USER_NAME'
-        export LOGNAME='\$USER_NAME'
-
-        echo
-        echo '========================================'
-        echo '== DEBIAN SETUP RESUME =='
-        echo '========================================'
-        echo
-
-        bash '\$SCRIPT'
-
-        RC=\\\$?
-
-        echo
-        echo '========================================'
-
-        if [ \\\$RC -eq 0 ]; then
-            echo '✅ SCRIPT BAŞARIYLA TAMAMLANDI'
-        else
-            echo \"❌ SCRIPT HATA İLE SONLANDI - Kod: \\\$RC\"
-        fi
-
-        echo '========================================'
-        echo
-        read -n 1 -s -r -p 'Çıkmak için herhangi bir tuşa basın...'
-        echo
-
-        exit \\\$RC
-    "
-
-exit \$?
-'
-
-[Install]
-WantedBy=graphical.target
-EOF
-
-        # ----------------------------------------------------
-        # SERVICE ENABLE
-        # ----------------------------------------------------
-
-        $SUDO systemctl daemon-reload
-        $SUDO systemctl enable debian-setup-resume.service
-
-        echo
-        echo "========================================"
-        echo "== YENİDEN BAŞLATILIYOR =="
-        echo "========================================"
-        echo
-        echo "✅ Yeni kernel kuruldu."
-        echo
-        echo "🔄 Sistem yeniden başlatılacak."
-        echo "🖥️  GNOME'a giriş yaptıktan sonra"
-        echo "    terminal otomatik açılacak."
-        echo
-        echo "▶️  Script kaldığı yerden devam edecek."
-        echo
-
-        $SUDO reboot
-        exit 0
-
-    else
-
-        echo
-        echo "✅ Yeni kernel bulunamadı."
-        echo "Mevcut kernel ile devam ediliyor."
-
-    fi
 fi
 
 # ============================================================
@@ -415,8 +206,11 @@ for PARAM in $GRUB_EXTRA; do
 
     if ! grep -q "$PARAM" /etc/default/grub; then
 
-        $SUDO sed -i \
-            "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $PARAM\"|" \
+        # -E ile tek tırnak (') ve çift tırnak (") ikisini de destekler;
+        # eski hali sadece çift tırnağı varsayıyordu ve bu sistemde
+        # (tek tırnaklı) sessizce hiçbir şey eklemiyordu.
+        $SUDO sed -i -E \
+            "s|^(GRUB_CMDLINE_LINUX_DEFAULT=)([\"'])(.*)\2|\1\2\3 $PARAM\2|" \
             /etc/default/grub
 
     fi
@@ -454,6 +248,23 @@ $SUDO apt purge -y \
     2>/dev/null || true
 
 $SUDO apt autoremove --purge -y
+
+# ============================================================
+# i386 MULTIARCH (wine32 için gerekli)
+# ============================================================
+
+echo
+echo "=============================="
+echo "== i386 MİMARİSİ =="
+echo "=============================="
+
+$SUDO dpkg --add-architecture i386
+$SUDO apt update
+
+echo
+echo "Etkin mimariler:"
+dpkg --print-foreign-architectures
+dpkg --print-architecture
 
 # ============================================================
 # TEMEL PAKETLER
@@ -814,31 +625,6 @@ cat > "$HOME/.config/fastfetch/config.jsonc" <<'EOF'
   ]
 }
 EOF
-
-# ============================================================
-# RESUME SERVICE TEMİZLİĞİ
-# ============================================================
-
-if [ "${SETUP_RESUME:-0}" = "1" ]; then
-
-    echo
-    echo "=============================="
-    echo "== RESUME SERVICE TEMİZLENİYOR =="
-    echo "=============================="
-
-    $SUDO systemctl disable \
-        debian-setup-resume.service \
-        2>/dev/null || true
-
-    $SUDO rm -f "$RESUME_SERVICE"
-    $SUDO rm -f "$RESUME_MARKER"
-
-    $SUDO systemctl daemon-reload
-
-    echo "✅ Resume service silindi."
-    echo "✅ Bir daha otomatik çalışmayacak."
-
-fi
 
 # ============================================================
 # BİTİŞ
