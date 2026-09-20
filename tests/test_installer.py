@@ -1,5 +1,6 @@
 """Regression tests for the installer; safe to run on any Linux host."""
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -70,6 +71,30 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn("dxvk2030", SOURCE)
         self.assertNotIn("starship.rs/install.sh", SOURCE)
         self.assertNotIn("GRUB_TIMEOUT=0", SOURCE)
+
+
+    def test_preview_is_read_only_and_plain_in_ci(self):
+        env = os.environ.copy()
+        env["NO_COLOR"] = "1"
+        env["TERM"] = "xterm-256color"
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--preview"],
+            capture_output=True, text=True, env=env, check=True,
+        )
+        self.assertEqual(result.stdout.count("[ OK ] Örnek çıktı"), 13)
+        self.assertIn("[13/13]", result.stdout)
+        self.assertIn("100%", result.stdout)
+        self.assertIn("KURULUM TAMAMLANDI", result.stdout)
+        self.assertIn("Önizleme modu", result.stderr)
+        self.assertNotIn("\x1b[", result.stdout + result.stderr)
+
+    def test_help_exits_before_install(self):
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "--help"],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertIn("--preview", result.stdout)
+        self.assertNotIn("sudo", result.stdout)
 
 
 if __name__ == "__main__":
