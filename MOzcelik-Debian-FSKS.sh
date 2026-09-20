@@ -13,13 +13,14 @@ SCRIPT_PATH="$(realpath "$0")"
 FSKS_PURGE_APPS="${FSKS_PURGE_APPS:-0}"
 FSKS_GRUB_TUNING="${FSKS_GRUB_TUNING:-0}"
 FSKS_WINETRICKS="${FSKS_WINETRICKS:-0}"
-FSKS_BACKPORTS_KERNEL="${FSKS_BACKPORTS_KERNEL:-0}"
+FSKS_BACKPORTS_KERNEL="${FSKS_BACKPORTS_KERNEL:-1}"
 FSKS_ALLOW_NVIDIA_BACKPORTS="${FSKS_ALLOW_NVIDIA_BACKPORTS:-0}"
 FSKS_SWAPPINESS="${FSKS_SWAPPINESS:-4}"
 FSKS_CHANGE_SHELL="${FSKS_CHANGE_SHELL:-1}"
 FSKS_INSTALL_FLATPAKS="${FSKS_INSTALL_FLATPAKS:-1}"
 FSKS_INSTALL_FONT="${FSKS_INSTALL_FONT:-1}"
 FSKS_INSTALL_NVIDIA="${FSKS_INSTALL_NVIDIA:-1}"
+FSKS_NVIDIA_SOURCE="${FSKS_NVIDIA_SOURCE:-official}"
 
 # ============================================================
 # FSKS TERMINAL UI (yerleşik, ek bağımlılık gerektirmez)
@@ -107,8 +108,8 @@ case "${1:-}" in
     --preview)
         ui_banner
         for stage in \
-            "APT kaynakları" "Kernel kontrolü" "GRUB" "İsteğe bağlı temizlik" \
-            "Temel paketler" "NVIDIA sürücüsü" "Fish & Starship" \
+            "APT kaynakları" "GRUB" "İsteğe bağlı temizlik" "Temel paketler" \
+            "NVIDIA sürücüsü" "Kernel kontrolü" "Fish & Starship" \
             "Flatpak uygulamaları" "Winetricks" "zRAM & swap" \
             "Fish yapılandırması" "Nerd Font" "Fastfetch"; do
             ui_step "$stage"
@@ -142,6 +143,10 @@ for setting in FSKS_PURGE_APPS FSKS_GRUB_TUNING FSKS_WINETRICKS FSKS_BACKPORTS_K
         exit 1
     fi
 done
+if [[ "$FSKS_NVIDIA_SOURCE" != "official" && "$FSKS_NVIDIA_SOURCE" != "debian" ]]; then
+    ui_error "FSKS_NVIDIA_SOURCE yalnızca official veya debian olabilir."
+    exit 1
+fi
 if ! [[ "$FSKS_SWAPPINESS" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|200)$ ]]; then
     echo "❌ FSKS_SWAPPINESS 0–200 arasında olmalıdır." >&2
     exit 1
@@ -254,49 +259,6 @@ if ! dpkg --print-foreign-architectures | grep -qx i386; then
     sudo dpkg --add-architecture i386
 fi
 sudo apt-get update
-
-# ============================================================
-# KERNEL: Trixie stable varsayılan; backports açıkça istenirse
-# ============================================================
-
-ui_step "Kernel kontrolü"
-
-echo "Aktif kernel: $(uname -r)"
-
-if [[ "$FSKS_BACKPORTS_KERNEL" == "1" ]]; then
-    # NVIDIA 550 DKMS ve yeni backports kernel'leri birlikte garanti edilmez.
-    if grep -sqi '^0x10de$' /sys/bus/pci/devices/*/vendor 2>/dev/null \
-            && [[ "$FSKS_ALLOW_NVIDIA_BACKPORTS" != "1" ]]; then
-        echo "❌ NVIDIA algılandı. Backports kernel ve NVIDIA DKMS uyumu garanti edilemez." >&2
-        echo "   Stable kernel ile devam etmek için FSKS_BACKPORTS_KERNEL=0 kullan." >&2
-        echo "   Bilinçli olarak denemek için FSKS_ALLOW_NVIDIA_BACKPORTS=1 kullan." >&2
-        exit 1
-    fi
-
-    KERNEL_SIMULATION="$(sudo apt-get -s install -t trixie-backports \
-        linux-image-amd64 linux-headers-amd64)" || {
-        echo "❌ Backports kernel simülasyonu başarısız." >&2
-        exit 1
-    }
-
-    if grep -Eq '^Inst linux-(image|headers)' <<< "$KERNEL_SIMULATION"; then
-        ui_info "Backports kernel + header yükleniyor."
-        sudo apt-get install -y -t trixie-backports \
-            linux-image-amd64 linux-headers-amd64
-    fi
-
-    # Kaldığı yerden eski kernel ile sürücü kurmaya devam ETME.
-    EXPECTED_KERNEL="$(dpkg-query -W -f='${Depends}' linux-image-amd64 2>/dev/null \
-        | grep -oE 'linux-image-[^ ,(]+' | head -n 1 || true)"
-    EXPECTED_KERNEL="${EXPECTED_KERNEL#linux-image-}"
-    if [[ -n "$EXPECTED_KERNEL" && "$EXPECTED_KERNEL" != "$(uname -r)" ]]; then
-        ui_warn "Kernel kurulu fakat aktif değil: $EXPECTED_KERNEL"
-        echo "   Yeniden başlat, sonra betiği tekrar çalıştır: $SCRIPT_PATH"
-        exit 0
-    fi
-else
-    ui_success "Stable kernel korunuyor (FSKS_BACKPORTS_KERNEL=1 ile isteğe bağlı backports)."
-fi
 
 # ============================================================
 # GRUB: makineye özgü ayarlar varsayılan kapalı
@@ -427,6 +389,58 @@ else
     ui_info "NVIDIA GPU tespit edilmedi."
     ui_info "NVIDIA sürücüsü kurulumu atlandı (GPU yok veya FSKS_INSTALL_NVIDIA=0)."
 
+fi
+
+# ============================================================
+# KERNEL: Backports varsayılan, Debian stable kurtarma seçeneği
+# ============================================================
+
+ui_step "Kernel kontrolü"
+
+echo "Aktif kernel: $(uname -r)"
+
+if [[ "$FSKS_BACKPORTS_KERNEL" == "1" ]]; then
+    # Debian'ın 550 DKMS paketiyle yeni kernel eşleşmesini varsayma.
+    if [[ "$FSKS_INSTALL_NVIDIA" == "1" && "$FSKS_NVIDIA_SOURCE" == "debian" ]] \
+            && lspci | grep -i NVIDIA >/dev/null \
+            && [[ "$FSKS_ALLOW_NVIDIA_BACKPORTS" != "1" ]]; then
+        ui_error "Debian NVIDIA 550 + backports kernel birlikte otomatik kurulmaz."
+        ui_info "Resmî NVIDIA deposu için FSKS_NVIDIA_SOURCE=official kullan."
+        ui_info "Yalnızca stable kernel için FSKS_BACKPORTS_KERNEL=0 kullan."
+        exit 1
+    fi
+
+    # Kullanılan kernel için kurtarma girişini APT autoremove'a bırakma.
+    OLD_KERNEL_PACKAGE="linux-image-$(uname -r)"
+    if dpkg-query -W -f='${Status}' "$OLD_KERNEL_PACKAGE" 2>/dev/null \
+            | grep -qx 'install ok installed'; then
+        sudo apt-mark manual "$OLD_KERNEL_PACKAGE"
+        ui_info "Kurtarma kerneli korundu: $OLD_KERNEL_PACKAGE"
+    fi
+
+    KERNEL_SIMULATION="$(sudo apt-get -s install -t trixie-backports \
+        linux-image-amd64 linux-headers-amd64)" || {
+        echo "❌ Backports kernel simülasyonu başarısız." >&2
+        exit 1
+    }
+
+    if grep -Eq '^Inst linux-(image|headers)' <<< "$KERNEL_SIMULATION"; then
+        ui_info "Backports kernel + header yükleniyor. NVIDIA sürücüsü önceden kuruldu."
+        sudo apt-get install -y -t trixie-backports \
+            linux-image-amd64 linux-headers-amd64
+    fi
+
+    # Kaldığı yerden eski kernel ile sürücü kurmaya devam ETME.
+    EXPECTED_KERNEL="$(dpkg-query -W -f='${Depends}' linux-image-amd64 2>/dev/null \
+        | grep -oE 'linux-image-[^ ,(]+' | head -n 1 || true)"
+    EXPECTED_KERNEL="${EXPECTED_KERNEL#linux-image-}"
+    if [[ -n "$EXPECTED_KERNEL" && "$EXPECTED_KERNEL" != "$(uname -r)" ]]; then
+        ui_warn "Kernel kurulu fakat aktif değil: $EXPECTED_KERNEL"
+        ui_info "GRUB üzerinden yeni kernel ile açıp betiği yeniden çalıştır: $SCRIPT_PATH"
+        exit 0
+    fi
+else
+    ui_info "Kernel atlandı: FSKS_BACKPORTS_KERNEL=0 (stable korunuyor)."
 fi
 
 # ============================================================
