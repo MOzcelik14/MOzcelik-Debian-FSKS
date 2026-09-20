@@ -355,25 +355,65 @@ if [[ "$FSKS_INSTALL_NVIDIA" == "1" ]] && lspci | grep -i "NVIDIA" >/dev/null; t
         fi
     fi
 
-    echo
-    echo "NVIDIA sürücüsü kuruluyor..."
-    echo "Kaynak: Debian Trixie (APT sürüm adayı)"
+    if [[ "$FSKS_NVIDIA_SOURCE" == "official" ]]; then
+        ui_info "Kaynak: NVIDIA resmî Debian 13 deposu (nvidia-open)."
+        ui_info "Açık kernel modülleri Turing ve yeni nesil NVIDIA GPU'larını gerektirir."
+        NVIDIA_REPO="https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64"
+        NVIDIA_KEYRING_URL="$NVIDIA_REPO/cuda-keyring_1.1-1_all.deb"
 
-    $SUDO apt-get install -y \
-        nvidia-driver \
-        nvidia-settings \
-        nvidia-kernel-dkms
+        if ! dpkg-query -W -f='${Status}' cuda-keyring 2>/dev/null \
+                | grep -qx 'install ok installed'; then
+            NVIDIA_KEYRING_FILE="$(mktemp --suffix=.deb)"
+            if ! curl --fail --location --silent --show-error --retry 3 \
+                    "$NVIDIA_KEYRING_URL" -o "$NVIDIA_KEYRING_FILE"; then
+                rm -f "$NVIDIA_KEYRING_FILE"
+                ui_error "NVIDIA depo anahtarlığı indirilemedi."
+                exit 1
+            fi
+            if ! sudo dpkg -i "$NVIDIA_KEYRING_FILE"; then
+                rm -f "$NVIDIA_KEYRING_FILE"
+                ui_error "NVIDIA depo anahtarlığı kurulamadı."
+                exit 1
+            fi
+            rm -f "$NVIDIA_KEYRING_FILE"
+        fi
 
-    echo
-    echo "DKMS aktif kernel için kontrol ediliyor..."
+        sudo apt-get update
+        if ! LC_ALL=C apt-cache policy nvidia-open | grep -F "$NVIDIA_REPO" >/dev/null; then
+            ui_error "nvidia-open paketi NVIDIA Debian 13 deposunda bulunamadı."
+            exit 1
+        fi
+        # APT uyumsuz paketleri veya geniş çaplı kaldırmaları uygulamadan
+        # önce çözümleyebilsin; başarısız simülasyonda kurulumu durdur.
+        if ! sudo apt-get -s install nvidia-open; then
+            ui_error "NVIDIA paket bağımlılıkları çözülemedi. Kernel güncellenmedi."
+            exit 1
+        fi
+        sudo apt-get install -y nvidia-open
+        # NVIDIA, Steam/Proton için Debian'da 32-bit sürücü kütüphanelerini öneriyor.
+        if ! sudo apt-get install -y nvidia-driver-libs:i386; then
+            ui_warn "NVIDIA i386 kütüphaneleri kurulamadı; Steam/Proton oyunları etkilenebilir."
+        fi
+    else
+        ui_warn "Debian'ın eski NVIDIA sürücü paketleri seçildi."
+        sudo apt-get install -y nvidia-driver nvidia-settings nvidia-kernel-dkms
+        if ! sudo apt-get install -y nvidia-driver-libs:i386; then
+            ui_warn "Debian NVIDIA i386 kütüphaneleri kurulamadı."
+        fi
+    fi
 
-    $SUDO dkms autoinstall -k "$(uname -r)"
+    ui_info "Aktif kernel için NVIDIA DKMS kontrol ediliyor."
+    sudo dkms autoinstall -k "$(uname -r)"
+    sudo depmod -a
 
-    $SUDO depmod -a
-
-    echo
-    echo "Aktif kernel:"
-    uname -r
+    if ! modinfo -k "$(uname -r)" nvidia >/dev/null 2>&1; then
+        ui_error "Aktif kernelin NVIDIA modülü bulunamadı. Kernel güncellenmedi."
+        exit 1
+    fi
+    ui_success "NVIDIA modül sürümü: $(modinfo -k "$(uname -r)" -F version nvidia)"
+    if command -v mokutil >/dev/null && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
+        ui_warn "Secure Boot açık; MOK imzası tamamlanmadan NVIDIA modülü yüklenmeyebilir."
+    fi
 
     if $SUDO modprobe nvidia 2>/dev/null; then
         ui_success "NVIDIA kernel modülü yüklendi."
