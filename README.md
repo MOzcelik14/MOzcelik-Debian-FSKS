@@ -12,6 +12,22 @@ bash MOzcelik-Debian-FSKS.sh
 
 Root olarak değil, sudo yetkili normal kullanıcıyla çalıştırın. Kernel değişirse betik durur; yeniden başlatıp aynı komutu yeniden çalıştırın. Sistem üzerinde APT, NVIDIA, Flatpak, shell ve bellek yapılandırmasını değiştirir; önce yedek alın.
 
+## Görsel kurulum arayüzü
+
+Kurulum, ek bağımlılık gerektirmeyen ve **betiğin içinde bulunan** renkli terminal arayüzüyle çalışır. 13 numaralı aşama, ilerleme çubuğu, başarı/bilgi/uyarı mesajları ve toplam süreyi içeren bitiş ekranı vardır. APT ve diğer araçların çıktıları gizlenmez; hata durumunda aşama ve satır bilgisi gösterilir.
+
+**Sistemde hiçbir değişiklik yapmadan arayüzü gör:**
+
+```bash
+bash MOzcelik-Debian-FSKS.sh --preview
+```
+
+Yardım: `bash MOzcelik-Debian-FSKS.sh --help`. Çıktıyı dosyaya yönlendirdiğinizde, terminal renk desteklemediğinde veya `NO_COLOR=1` tanımladığınızda ANSI renk kodları kullanılmaz:
+
+```bash
+NO_COLOR=1 bash MOzcelik-Debian-FSKS.sh --preview
+```
+
 ## Ne yapar?
 
 - APT kaynaklarına contrib, non-free, non-free-firmware ekler; **trixie-backports** kaynağını etkinleştirir ve i386 mimarisini açar.
