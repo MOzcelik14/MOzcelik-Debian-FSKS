@@ -465,25 +465,26 @@ fi
 # JETBRAINS MONO NERD FONT
 # ============================================================
 
-echo
-echo "=============================="
-echo "== JetBrainsMono Nerd Font =="
-echo "=============================="
-
-mkdir -p "$HOME/.local/share/fonts"
-
-FONT_TMP="$(mktemp --suffix=.zip)"
-if curl --fail --location --silent --show-error --retry 3 \
-        -o "$FONT_TMP" \
-        https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip \
-    && unzip -tq "$FONT_TMP" >/dev/null; then
-    unzip -oq "$FONT_TMP" -d "$HOME/.local/share/fonts"
+if [[ "$FSKS_INSTALL_FONT" == "1" ]]; then
+    mkdir -p "$HOME/.local/share/fonts"
+    if compgen -G "$HOME/.local/share/fonts/JetBrainsMonoNerdFont*.ttf" >/dev/null; then
+        echo "✅ JetBrainsMono Nerd Font zaten mevcut."
+    else
+        FONT_TMP="$(mktemp --suffix=.zip)"
+        if curl --fail --location --silent --show-error --retry 3 \
+                -o "$FONT_TMP" \
+                https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip \
+            && unzip -tq "$FONT_TMP" >/dev/null; then
+            unzip -oq "$FONT_TMP" -d "$HOME/.local/share/fonts"
+            fc-cache -f
+        else
+            echo "⚠️ Font indirilemedi / arşiv bozuk; kuruluma devam."
+        fi
+        rm -f "$FONT_TMP"
+    fi
 else
-    echo "⚠️ Font indirilemedi / arşiv bozuk; kuruluma devam."
+    echo "ℹ️ Font kurulumu atlandı (FSKS_INSTALL_FONT=1 ile etkin)."
 fi
-rm -f "$FONT_TMP"
-
-fc-cache -fv
 
 # ============================================================
 # FASTFETCH
@@ -610,8 +611,11 @@ uname -r
 
 echo
 echo "NVIDIA:"
-nvidia-smi 2>/dev/null ||
-    echo "⚠️ nvidia-smi şu anda çalışmıyor."
+if lspci | grep -qi "NVIDIA"; then
+    nvidia-smi 2>/dev/null || echo "⚠️ NVIDIA GPU algılandı ancak nvidia-smi çalışmıyor."
+else
+    echo "NVIDIA GPU bulunmadı."
+fi
 
 echo
 echo "GRUB:"
