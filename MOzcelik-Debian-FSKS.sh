@@ -20,8 +20,9 @@ FSKS_SWAPPINESS="${FSKS_SWAPPINESS:-100}"
 FSKS_CHANGE_SHELL="${FSKS_CHANGE_SHELL:-1}"
 FSKS_INSTALL_FLATPAKS="${FSKS_INSTALL_FLATPAKS:-1}"
 FSKS_INSTALL_FONT="${FSKS_INSTALL_FONT:-1}"
+FSKS_INSTALL_NVIDIA="${FSKS_INSTALL_NVIDIA:-1}"
 
-for setting in FSKS_PURGE_APPS FSKS_GRUB_TUNING FSKS_WINETRICKS FSKS_BACKPORTS_KERNEL FSKS_ALLOW_NVIDIA_BACKPORTS FSKS_CHANGE_SHELL FSKS_INSTALL_FLATPAKS FSKS_INSTALL_FONT; do
+for setting in FSKS_PURGE_APPS FSKS_GRUB_TUNING FSKS_WINETRICKS FSKS_BACKPORTS_KERNEL FSKS_ALLOW_NVIDIA_BACKPORTS FSKS_CHANGE_SHELL FSKS_INSTALL_FLATPAKS FSKS_INSTALL_FONT FSKS_INSTALL_NVIDIA; do
     if [[ "${!setting}" != "0" && "${!setting}" != "1" ]]; then
         printf '❌ %s yalnızca 0 veya 1 olabilir.\n' "$setting" >&2
         exit 1
@@ -234,23 +235,15 @@ echo "=============================="
 echo "== TEMEL PAKETLER =="
 echo "=============================="
 
-$SUDO apt install -y \
-    numlockx \
-    fish \
-    starship \
-    fastfetch \
-    pciutils \
-    fontconfig \
-    steam-installer \
-    wine \
-    wine32 \
-    winetricks \
-    audacious \
-    btop \
-    rar \
-    unrar \
-    unzip \
-    curl
+$SUDO apt-get install -y \
+    fish starship fastfetch pciutils fontconfig btop unzip curl
+
+# Eksik bir oyun/multimedya paketi kalan kurulum adımlarını engellemesin.
+for pkg in numlockx steam-installer wine wine32 winetricks audacious rar unrar; do
+    if ! $SUDO apt-get install -y "$pkg"; then
+        echo "⚠️ İsteğe bağlı APT paketi kurulamadı: $pkg"
+    fi
+done
 
 # ============================================================
 # NVIDIA
@@ -265,7 +258,7 @@ echo "=============================="
 # NVIDIA DONANIM KONTROLÜ
 # ============================================================
 
-if lspci | grep -qi "NVIDIA"; then
+if [[ "$FSKS_INSTALL_NVIDIA" == "1" ]] && lspci | grep -qi "NVIDIA"; then
 
     echo "✅ NVIDIA GPU tespit edildi."
     echo "NVIDIA sürücüsü kurulumu başlatılıyor..."
@@ -318,8 +311,7 @@ if lspci | grep -qi "NVIDIA"; then
 else
 
     echo "ℹ️ NVIDIA GPU tespit edilmedi."
-    echo "ℹ️ Sanal makine / NVIDIA'sız sistem olduğu varsayılıyor."
-    echo "⏭️ NVIDIA sürücüsü kurulumu atlanıyor."
+    echo "⏭️ NVIDIA sürücüsü kurulumu atlandı (GPU yok veya FSKS_INSTALL_NVIDIA=0)."
 
 fi
 
