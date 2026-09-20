@@ -1,5 +1,6 @@
 #!/bin/bash
-set -e
+set -Eeuo pipefail
+trap 'printf "❌ Satır %s: komut başarısız oldu (çıkış: %s).\n" "$LINENO" "$?" >&2' ERR
 
 # ============================================================
 # DEBIAN TRIXIE KURULUM / AYAR SCRIPTİ
@@ -10,6 +11,9 @@ set -e
 # ============================================================
 
 SCRIPT_PATH="$(realpath "$0")"
+FSKS_PURGE_APPS="${FSKS_PURGE_APPS:-0}"
+FSKS_GRUB_TUNING="${FSKS_GRUB_TUNING:-0}"
+FSKS_WINETRICKS="${FSKS_WINETRICKS:-0}"
 
 # ============================================================
 # ROOT KONTROLÜ
@@ -21,7 +25,16 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 
-TARGET_USER="$USER"
+# Debian 13 dışındaki sistemlerin kaynaklarını değiştirmeyi reddet.
+# shellcheck disable=SC1091
+source /etc/os-release
+if [[ "${ID:-}" != "debian" || "${VERSION_CODENAME:-}" != "trixie" || "$(dpkg --print-architecture)" != "amd64" ]]; then
+    echo "❌ Yalnızca Debian 13 (trixie) amd64 desteklenir." >&2
+    exit 1
+fi
+command -v sudo >/dev/null || { echo "❌ sudo bulunamadı." >&2; exit 1; }
+sudo -v
+TARGET_USER="$(id -un)"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 
 if [ -z "$TARGET_HOME" ]; then
@@ -35,73 +48,68 @@ export USER="$TARGET_USER"
 SUDO="sudo"
 
 # ============================================================
-# DEBIAN REPOSITORY
+# DEBIAN KAYNAKLARI / BACKPORTS / i386
 # ============================================================
 
-echo
-echo "=============================="
-echo "== DEBIAN REPOSITORY =="
-echo "=============================="
+backup_once() {
+    local file="$1"
+    if [[ -f "$file" && ! -e "$file.fsks.bak" ]]; then
+        sudo cp -a "$file" "$file.fsks.bak"
+        echo "📦 Yedek: $file.fsks.bak"
+    fi
+}
 
-# ------------------------------------------------------------
-# debian.sources (deb822) varsa Components satırını düzenle
-# ------------------------------------------------------------
+update_components() {
+    local file="$1" tmp
+    [[ -f "$file" ]] || return 0
+    tmp="$(mktemp)"
+    awk '
+      /^Components:[[:space:]]/ {
+        for (i=1; i<=3; i++) {
+          c=(i==1 ? "contrib" : i==2 ? "non-free" : "non-free-firmware")
+          if (index(" " $0 " ", " " c " ") == 0) $0=$0 " " c
+        }
+      }
+      /^deb(-src)?[[:space:]]/ {
+        # Eski tip apt satırlarında mevcut alanları muhafaza et.
+        split($0, parts, /[[:space:]]+#/)
+        line=parts[1]
+        for (i=1; i<=3; i++) {
+          c=(i==1 ? "contrib" : i==2 ? "non-free" : "non-free-firmware")
+          if (index(" " line " ", " " c " ") == 0) line=line " " c
+        }
+        if (length(parts[2])) line=line " #" parts[2]
+        $0=line
+      }
+      {print}
+    ' "$file" > "$tmp"
+    if ! cmp -s "$tmp" "$file"; then
+        backup_once "$file"
+        sudo install -m 0644 "$tmp" "$file"
+        echo "✅ Depo bileşenleri: $file"
+    fi
+    rm -f "$tmp"
+}
 
-if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+update_components /etc/apt/sources.list.d/debian.sources
+update_components /etc/apt/sources.list
 
-    $SUDO awk '
-    /^Components:/ {
-        if ($0 !~ /(^| )contrib( |$)/)
-            $0 = $0 " contrib"
-
-        if ($0 !~ /(^| )non-free( |$)/)
-            $0 = $0 " non-free"
-
-        if ($0 !~ /(^| )non-free-firmware( |$)/)
-            $0 = $0 " non-free-firmware"
-    }
-    { print }
-    ' /etc/apt/sources.list.d/debian.sources |
-    $SUDO tee /tmp/debian.sources.new >/dev/null
-
-    $SUDO mv /tmp/debian.sources.new \
-        /etc/apt/sources.list.d/debian.sources
-
-    echo "✅ debian.sources güncellendi."
-
+if ! grep -RsEq '^(Suites:.*trixie-backports|deb[[:space:]].*[[:space:]]trixie-backports[[:space:]])' \
+        /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+    sudo tee /etc/apt/sources.list.d/fsks-backports.sources >/dev/null <<'EOF'
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie-backports
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+    echo "✅ trixie-backports eklendi."
 fi
 
-# ------------------------------------------------------------
-# Eski sources.list formatı varsa deb satırlarını düzenle
-# ------------------------------------------------------------
-
-if [ -f /etc/apt/sources.list ]; then
-
-    $SUDO awk '
-    /^deb / {
-        if ($0 !~ /(^| )contrib( |$)/)
-            $0 = $0 " contrib"
-
-        if ($0 !~ /(^| )non-free( |$)/)
-            $0 = $0 " non-free"
-
-        if ($0 !~ /(^| )non-free-firmware( |$)/)
-            $0 = $0 " non-free-firmware"
-    }
-    { print }
-    ' /etc/apt/sources.list |
-    $SUDO tee /tmp/sources.list.new >/dev/null
-
-    $SUDO mv /tmp/sources.list.new \
-        /etc/apt/sources.list
-
-    echo "✅ sources.list güncellendi."
-
+if ! dpkg --print-foreign-architectures | grep -qx i386; then
+    sudo dpkg --add-architecture i386
 fi
-
-echo
-echo "APT kaynakları:"
-$SUDO apt update
+sudo apt-get update
 
 # ============================================================
 # KERNEL KONTROLÜ
@@ -116,21 +124,16 @@ echo "Mevcut kernel:"
 uname -r
 
 echo
-echo "APT güncelleniyor..."
-
-$SUDO apt update
-
-echo
 echo "Kernel güncellemesi kontrol ediliyor..."
 
 KERNEL_UPDATE_AVAILABLE=0
 
-if $SUDO apt-get -s install \
-    -t trixie-backports \
-    linux-image-amd64 \
-    linux-headers-amd64 2>/dev/null |
-    grep -E '^Inst linux-(image|headers)' >/dev/null; then
-
+KERNEL_SIMULATION="$($SUDO apt-get -s install -t trixie-backports \
+    linux-image-amd64 linux-headers-amd64)" || {
+    echo "❌ Backports kernel paketleri kontrol edilemedi." >&2
+    exit 1
+}
+if grep -Eq '^Inst linux-(image|headers)' <<< "$KERNEL_SIMULATION"; then
     KERNEL_UPDATE_AVAILABLE=1
 fi
 
@@ -177,94 +180,46 @@ else
 fi
 
 # ============================================================
-# GRUB
+# GRUB: makineye özgü ayarlar varsayılan kapalı
 # ============================================================
 
-echo
-echo "=============================="
-echo "== GRUB AYARLARI =="
-echo "=============================="
-
-GRUB_EXTRA="acpi_backlight=native nvme_core.default_ps_max_latency_us=0"
-
-# GRUB_TIMEOUT=0
-if grep -q '^GRUB_TIMEOUT=' /etc/default/grub; then
-
-    $SUDO sed -i \
-        's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' \
-        /etc/default/grub
-
+if [[ "$FSKS_GRUB_TUNING" == "1" ]]; then
+    backup_once /etc/default/grub
+    if ! grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
+        echo "❌ GRUB_CMDLINE_LINUX_DEFAULT yok; dosya değiştirilmedi." >&2
+        exit 1
+    fi
+    for PARAM in acpi_backlight=native nvme_core.default_ps_max_latency_us=0; do
+        if ! grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | grep -Fqw -- "$PARAM"; then
+            sudo sed -i -E "s|^(GRUB_CMDLINE_LINUX_DEFAULT=)([\"'])(.*)\2|\1\2\3 $PARAM\2|" /etc/default/grub
+        fi
+    done
+    # Kurtarma menüsü kullanılabilsin.
+    if grep -q '^GRUB_TIMEOUT=' /etc/default/grub; then
+        sudo sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=3/' /etc/default/grub
+    else
+        echo 'GRUB_TIMEOUT=3' | sudo tee -a /etc/default/grub >/dev/null
+    fi
+    sudo update-grub
 else
-
-    echo 'GRUB_TIMEOUT=0' |
-        $SUDO tee -a /etc/default/grub >/dev/null
-
+    echo "ℹ️ GRUB korundu (FSKS_GRUB_TUNING=1 ile etkinleştirilebilir)."
 fi
 
-# Kernel parametreleri
-for PARAM in $GRUB_EXTRA; do
-
-    if ! grep -q "$PARAM" /etc/default/grub; then
-
-        # -E ile tek tırnak (') ve çift tırnak (") ikisini de destekler;
-        # eski hali sadece çift tırnağı varsayıyordu ve bu sistemde
-        # (tek tırnaklı) sessizce hiçbir şey eklemiyordu.
-        $SUDO sed -i -E \
-            "s|^(GRUB_CMDLINE_LINUX_DEFAULT=)([\"'])(.*)\2|\1\2\3 $PARAM\2|" \
-            /etc/default/grub
-
-    fi
-
-done
-
-$SUDO update-grub
-
-echo
-echo "GRUB_TIMEOUT:"
-grep '^GRUB_TIMEOUT=' /etc/default/grub
-
-echo
-echo "GRUB kernel parametreleri:"
-grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub
-
 # ============================================================
-# GEREKSİZ PAKETLER
+# İSTEĞE BAĞLI PAKET TEMİZLİĞİ
 # ============================================================
 
-echo
-echo "=============================="
-echo "== GEREKSİZ PAKETLER =="
-echo "=============================="
-
-$SUDO systemctl disable \
-    NetworkManager-wait-online.service \
-    2>/dev/null || true
-
-$SUDO apt purge -y \
-    thunderbird \
-    transmission-gtk \
-    warpinator \
-    rhythmbox \
-    2>/dev/null || true
-
-$SUDO apt autoremove --purge -y
+if [[ "$FSKS_PURGE_APPS" == "1" ]]; then
+    sudo systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
+    sudo apt-get purge -y thunderbird transmission-gtk warpinator rhythmbox
+    sudo apt-get autoremove --purge -y
+else
+    echo "ℹ️ Mevcut uygulamalar korundu (FSKS_PURGE_APPS=1 ile temizlik)."
+fi
 
 # ============================================================
-# i386 MULTIARCH (wine32 için gerekli)
+# i386, ilk APT güncellemesinden önce etkinleştirildi.
 # ============================================================
-
-echo
-echo "=============================="
-echo "== i386 MİMARİSİ =="
-echo "=============================="
-
-$SUDO dpkg --add-architecture i386
-$SUDO apt update
-
-echo
-echo "Etkin mimariler:"
-dpkg --print-foreign-architectures
-dpkg --print-architecture
 
 # ============================================================
 # TEMEL PAKETLER
