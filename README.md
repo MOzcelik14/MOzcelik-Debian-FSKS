@@ -1,72 +1,53 @@
 # MOzcelik-Debian-FSKS
 
-Bu betik, Debian 13 (Trixie) kurulumu sonrası sık yapılan ayarları otomatik olarak yapar.
-Amaç: Yeni kurulan bir Debian 13 sistemini oyun, geliştirme ve günlük kullanım için hazır hale getirmek.
+Debian **13 (Trixie) amd64** GNOME sistemini oyun, geliştirme ve günlük kullanım için hazırlayan kişisel kurulum betiği. Debian testing/Forky, Ubuntu veya Linux Mint üzerinde **çalıştırmayın**.
 
+## Kurulum
 
-Neler Yapar?
-------------
+```bash
+git clone https://github.com/MOzcelik14/MOzcelik-Debian-FSKS.git
+cd MOzcelik-Debian-FSKS
+bash MOzcelik-Debian-FSKS.sh
+```
 
-- APT depolarına contrib, non-free, non-free-firmware ekler.
-- 32-bit mimari desteğini açar (i386).
-- GRUB'a ek parametreler ekler.
-- Gereksiz paketleri kaldırır (Thunderbird, Transmission, Rhythmbox, Warpinator).
-- Sık kullanılan paketleri kurar: fish, starship, fastfetch, steam, wine, winetricks, audacious, btop, rar, unrar, numlockx.
-- NVIDIA sürücülerini kurar, nouveau'yu blacklist'ler ve modülü derler.
-- Flatpak ve Flathub'u kurar, popüler uygulamaları yükler (Kdenlive, Audacity, OnlyOffice, Heroic Games Launcher, Spotify, ProtonUp-Qt, Tube Converter).
-- Winetricks ile .NET, vcrun, corefonts ve DXVK kurar.
-- zRAM ayarlar (%50 RAM kadar, zstd sıkıştırma).
-- 4GB swap dosyası oluşturur.
-- vm.swappiness=4 ile swap kullanımını azaltır.
-- Kullanıcı shell'ini fish olarak değiştirir.
-- fish için alias'lar ve fastfetch yapılandırması oluşturur.
+Root olarak değil, sudo yetkili normal kullanıcıyla çalıştırın. Kernel değişirse betik durur; yeniden başlatıp aynı komutu yeniden çalıştırın. Sistem üzerinde APT, NVIDIA, Flatpak, shell ve bellek yapılandırmasını değiştirir; önce yedek alın.
 
+## Ne yapar?
 
-Gereksinimler
--------------
+- APT kaynaklarına contrib, non-free, non-free-firmware ekler; **trixie-backports** kaynağını etkinleştirir ve i386 mimarisini açar.
+- Backports kernel ve header paketlerini kontrol eder; yeni kernel kurulduğunda yeniden başlatma için durur.
+- Oyun ve geliştirme paketlerini (Steam, Wine/Wine32, Winetricks, Fish, Starship, Fastfetch vb.) APT'den yükler.
+- NVIDIA GPU varsa backports sürücüsü, DKMS ve bulunabilir kernel header paketlerini kurmayı dener. Secure Boot açıksa modül imzası ayrıca gerekebilir.
+- Flathub ile Kdenlive, Audacity, OnlyOffice, Heroic, Android Studio vb. Flatpak uygulamalarını kurar.
+- Fish'e tekrar eklenmeyen bir FSKS bloğu, alias'lar ve Starship ekler; var olan Fish ve Fastfetch yapılandırmalarını korur.
+- JetBrainsMono Nerd Font indirir; zRAM'i RAM'in %50'si ve zstd ile ayarlar; swappiness=4 uygular.
 
-- Debian 13 (Trixie) veya daha yeni bir sürüm.
-- İnternet bağlantısı.
-- sudo yetkisi olan bir kullanıcı.
-- NVIDIA ekran kartı varsa sürücü kurulur (isteğe bağlı, otomatik).
+**Swap dosyası oluşturmaz.** Önceden var olan swap dosyası/bölümü korunur. Fastfetch'te yeni bir yapılandırma üretirken yerleşik Debian logosunu kullanır.
 
+## İsteğe bağlı kişisel işlemler
 
-Özel Notlar
------------
+Varsayılan çalıştırma var olan uygulamaları ve GRUB ayarlarını değiştirmez; Wine'ın varsayılan prefix'ine dokunmaz. Şu değişkenlerle isteğe bağlı işlemleri açabilirsiniz:
 
-- NVIDIA Secure Boot etkinse, reboot sırasında MOK yönetimi ile modülü imzalamanız gerekir.
-- Fastfetch varsayılan olarak ~/.config/fastfetch/marin.png arar. Kendi logonuzu koyabilirsiniz.
-- fish kabuğunda şu alias'lar tanımlanır:
-  güncelle, temizle, yükle, fyükle, sil, fsil, kapa, söyle
-- zRAM %50 RAM kadar, ek olarak 4GB swap dosyası oluşturulur. Swappiness 4 olarak ayarlanır.
+| Değişken | Etki |
+| --- | --- |
+| `FSKS_PURGE_APPS=1` | Thunderbird, Transmission, Warpinator, Rhythmbox kaldırılır; autoremove yapılır ve NetworkManager-wait-online kapatılır. |
+| `FSKS_GRUB_TUNING=1` | `acpi_backlight=native` ve `nvme_core.default_ps_max_latency_us=0` ekler; GRUB menü süresini 3 saniye yapar. Bunlar cihaz özelidir. |
+| `FSKS_WINETRICKS=1` | Dotnet48, vcrun2022, corefonts'u yalnızca `~/.local/share/wineprefixes/fsks` içine kurar. |
 
+Örnek: `FSKS_GRUB_TUNING=1 bash MOzcelik-Debian-FSKS.sh`
 
-Kontroller (isteğe bağlı)
--------------------------
+## Yedekler ve kontroller
 
-nvidia-smi      # NVIDIA sürücü durumu
-fastfetch       # Sistem özeti
-swapon --show   # Swap ve zRAM durumu
-zramctl         # zRAM detayları
-flatpak list    # Flatpak uygulamaları
+Betik, değiştirdiği mevcut APT kaynakları, GRUB ve Fish dosyaları için bir defalık `.fsks.bak` yedeği oluşturur. **Bu, tam sistem yedeğinin yerini tutmaz.**
 
+```bash
+nvidia-smi
+uname -r
+swapon --show
+zramctl
+flatpak list
+```
 
-Uyarılar
---------
+NVIDIA sürücüsü, kernel ve Wi-Fi gibi donanıma bağlı işlemleri gerçek Debian kurulumunda ayrıca doğrulayın. GitHub Actions yalnızca statik kontroller yapar.
 
-- Betik /etc/apt/sources.list dosyasını düzenler. Yedek almak isterseniz manuel kopyalayın.
-- Shell değiştirilir, oturumu kapatıp açmanız gerekebilir.
-- NVIDIA kurulumu sırasında ekran kararabilir, bu normaldir.
-- set -e ile çalışır, hata durumunda durur (öngörülen hatalar || true ile yönetilir).
-
-
-Lisans
-------
-
-MIT Lisansı ile dağıtılmaktadır.
-
-
-Katkı
------
-
-Hata bildirimi veya geliştirme önerileri için Issues / PR açabilirsiniz.
+MIT lisansı.
