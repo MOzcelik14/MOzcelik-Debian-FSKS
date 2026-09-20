@@ -31,9 +31,9 @@ NO_COLOR=1 bash MOzcelik-Debian-FSKS.sh --preview
 ## Ne yapar?
 
 - APT kaynaklarına contrib, non-free, non-free-firmware ekler; **trixie-backports** kaynağını etkinleştirir ve i386 mimarisini açar.
-- Trixie stable kernelini varsayılan olarak korur. Backports kernel isteğe bağlıdır ve NVIDIA bulunan sistemlerde ek güvenlik onayı gerektirir. Kernel güncellendiyse yeniden başlatma için durur.
+- **Varsayılan olarak trixie-backports kernel + header kurar.** Kernel güncellendiyse yeniden başlatma için durur. Önce çalışan kernel paketini manuel işaretleyerek kurtarma seçeneğini korur.
 - Fish, Starship, Fastfetch gibi temel paketleri APT'den yükler; Steam, Wine/Wine32, Winetricks ve multimedya araçlarını birbirinden bağımsız kurar. İsteğe bağlı bir paket başarısız olursa uyarır ve diğerlerine devam eder.
-- NVIDIA GPU varsa Trixie sürücü paketlerini ve **aktif kernel** header'larını kurar. Secure Boot açıksa modül imzası ayrıca gerekebilir. Yeni kernelde 550 sürücüsünün derlenmesi garanti edilmez.
+- NVIDIA GPU varsa önce aktif kernel header'larını, ardından NVIDIA'nın **resmî Debian 13 deposundan `nvidia-open`** sürücüsünü ve Steam/Proton için `nvidia-driver-libs:i386` paketini kurmayı dener; ancak ardından backports kernel kurar. `nvidia-open` Turing ve sonrası (RTX 3050 dahil) içindir. Secure Boot açıksa MOK imzası ayrıca gerekebilir.
 - Flathub ile Kdenlive, Audacity, OnlyOffice, Heroic, Android Studio vb. Flatpak uygulamalarını kurar.
 - Fish'e tekrar eklenmeyen bir FSKS bloğu, alias'lar ve Starship ekler; var olan Fish ve Fastfetch yapılandırmalarını korur.
 - JetBrainsMono Nerd Font'u yalnızca eksikse indirir; zRAM'i RAM'in %50'si ve zstd ile ayarlar; varsayılan swappiness=4 uygular (değiştirilebilir).
@@ -51,8 +51,9 @@ Varsayılan çalıştırma var olan uygulamaları ve GRUB ayarlarını değişti
 | `FSKS_PURGE_APPS=1` | Thunderbird, Transmission, Warpinator, Rhythmbox kaldırılır; autoremove yapılır ve NetworkManager-wait-online kapatılır. |
 | `FSKS_GRUB_TUNING=1` | `acpi_backlight=native` ve `nvme_core.default_ps_max_latency_us=0` ekler; GRUB menü süresini 3 saniye yapar. Bunlar cihaz özelidir. |
 | `FSKS_WINETRICKS=1` | Dotnet48, vcrun2022, corefonts'u yalnızca `~/.local/share/wineprefixes/fsks` içine kurar. |
-| `FSKS_BACKPORTS_KERNEL=1` | En yeni backports kernel ve header'larını kurar. NVIDIA bulunan makinelerde ek onay gerektirir. |
-| `FSKS_ALLOW_NVIDIA_BACKPORTS=1` | Backports kerneli NVIDIA ile deneme riskini açıkça kabul eder. **DKMS derlemesi başarısız olabilir.** |
+| `FSKS_BACKPORTS_KERNEL=0` | Backports kernel kurulumunu kapatır, çalışan kerneli korur. Varsayılan 1. |
+| `FSKS_NVIDIA_SOURCE=debian` | NVIDIA resmî deposu yerine Debian'ın kendi sürücü paketlerini kurar. Yeni kernelde eski 550 sürücüsü için ayrıca onay gerekir. |
+| `FSKS_ALLOW_NVIDIA_BACKPORTS=1` | **Yalnızca** `FSKS_NVIDIA_SOURCE=debian` ile eski NVIDIA sürücüsünü backports kernel üzerinde denemeye izin verir; uyumu garanti etmez. |
 | `FSKS_SWAPPINESS=100` | İstenirse zRAM'i daha aktif kullanmak için farklı swappiness değeri seçer (0–200); varsayılan 4. |
 | `FSKS_INSTALL_NVIDIA=0` | NVIDIA sürücüsünü kurmayı atlar (GPU bulunsa bile). |
 | `FSKS_CHANGE_SHELL=0` | Varsayılan shell'in Fish olarak değiştirilmesini engeller. |
@@ -61,7 +62,17 @@ Varsayılan çalıştırma var olan uygulamaları ve GRUB ayarlarını değişti
 
 Örnek: `FSKS_GRUB_TUNING=1 FSKS_SWAPPINESS=100 bash MOzcelik-Debian-FSKS.sh`
 
-**NVIDIA kullananlar için:** `FSKS_BACKPORTS_KERNEL=1` seçimini zorunlu olmadıkça kullanmayın. Script, `FSKS_ALLOW_NVIDIA_BACKPORTS=1` verilmedikçe NVIDIA'lı sistemde bu işlemi reddeder. Bu bayrak uyumluluğu garanti etmez.
+**RTX 3050 kullananlar için:** Varsayılan akış `NVIDIA resmî nvidia-open → backports kernel → reboot → betiği tekrar çalıştır` şeklindedir. 6.12 serisi kurulu kernel paketini korur. Yeni kernelde DKMS başarısız olursa kurulum durur; önceki kernelle GRUB üzerinden açarak sorunu giderebilirsin. **Gerçek donanımda başarı garantisi değildir.**
+
+## NVIDIA kurulumu ve uyumluluk
+
+NVIDIA'nın [Debian 13 kurulum kılavuzu](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/debian.html), `cuda-keyring` kullanarak resmî depoyu etkinleştirmeyi ve açık modüller için `nvidia-open` kurulmasını tarif eder. Script, bu yöntemi kullanır ve **CUDA Toolkit'i yüklemez**. Oyunlar için NVIDIA'nın [32-bit kütüphane önerisini](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/optional-components.html) ayrıca uygular.
+
+- Resmî depo paketleri, AMD64 için `https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/` adresinden alınır.
+- Yeniden başlatma öncesi mevcut kernel modülü doğrulanır; yeni kernel kurulurken DKMS derlemesi hata verirse betik durur.
+- CUDA deposu `cuda-keyring` ile imzalı olarak eklenir; başka dağıtımın NVIDIA deposu kullanılmaz.
+- NVIDIA sürücüsü ve kernelin **çalıştığı** yalnızca gerçek Debian 13 kurulumu üzerinde `nvidia-smi` ve oyunlarla doğrulanabilir.
+- Steam/Proton için 32-bit kütüphane kurulumu başarısız olursa uyarı verilir; bunu göz ardı etmeyin.
 
 ## Yedekler ve kontroller
 
