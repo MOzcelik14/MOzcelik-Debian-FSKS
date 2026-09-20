@@ -16,7 +16,7 @@ Root olarak değil, sudo yetkili normal kullanıcıyla çalıştırın. Kernel d
 
 - APT kaynaklarına contrib, non-free, non-free-firmware ekler; **trixie-backports** kaynağını etkinleştirir ve i386 mimarisini açar.
 - Trixie stable kernelini varsayılan olarak korur. Backports kernel isteğe bağlıdır ve NVIDIA bulunan sistemlerde ek güvenlik onayı gerektirir. Kernel güncellendiyse yeniden başlatma için durur.
-- Oyun ve geliştirme paketlerini (Steam, Wine/Wine32, Winetricks, Fish, Starship, Fastfetch vb.) APT'den yükler.
+- Fish, Starship, Fastfetch gibi temel paketleri APT'den yükler; Steam, Wine/Wine32, Winetricks ve multimedya araçlarını birbirinden bağımsız kurar. İsteğe bağlı bir paket başarısız olursa uyarır ve diğerlerine devam eder.
 - NVIDIA GPU varsa Trixie sürücü paketlerini ve **aktif kernel** header'larını kurar. Secure Boot açıksa modül imzası ayrıca gerekebilir. Yeni kernelde 550 sürücüsünün derlenmesi garanti edilmez.
 - Flathub ile Kdenlive, Audacity, OnlyOffice, Heroic, Android Studio vb. Flatpak uygulamalarını kurar.
 - Fish'e tekrar eklenmeyen bir FSKS bloğu, alias'lar ve Starship ekler; var olan Fish ve Fastfetch yapılandırmalarını korur.
@@ -36,6 +36,7 @@ Varsayılan çalıştırma var olan uygulamaları ve GRUB ayarlarını değişti
 | `FSKS_BACKPORTS_KERNEL=1` | En yeni backports kernel ve header'larını kurar. NVIDIA bulunan makinelerde ek onay gerektirir. |
 | `FSKS_ALLOW_NVIDIA_BACKPORTS=1` | Backports kerneli NVIDIA ile deneme riskini açıkça kabul eder. **DKMS derlemesi başarısız olabilir.** |
 | `FSKS_SWAPPINESS=4` | İstenirse kişisel swappiness değerini kullanır (0–200); varsayılan 100. |
+| `FSKS_INSTALL_NVIDIA=0` | NVIDIA sürücüsünü kurmayı atlar (GPU bulunsa bile). |
 | `FSKS_CHANGE_SHELL=0` | Varsayılan shell'in Fish olarak değiştirilmesini engeller. |
 | `FSKS_INSTALL_FLATPAKS=0` | Flatpak uygulamalarını atlar. |
 | `FSKS_INSTALL_FONT=0` | Font indirmesini atlar. |
