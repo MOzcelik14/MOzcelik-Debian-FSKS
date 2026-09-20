@@ -230,11 +230,13 @@ echo "=============================="
 echo "== TEMEL PAKETLER =="
 echo "=============================="
 
-$SUDO apt update
-
 $SUDO apt install -y \
     numlockx \
     fish \
+    starship \
+    fastfetch \
+    pciutils \
+    fontconfig \
     steam-installer \
     wine \
     wine32 \
@@ -245,9 +247,6 @@ $SUDO apt install -y \
     unrar \
     unzip \
     curl
-
-$SUDO apt install -y fastfetch ||
-    echo "⚠️ fastfetch kurulamadı."
 
 # ============================================================
 # NVIDIA
@@ -283,9 +282,11 @@ if lspci | grep -qi "NVIDIA"; then
         else
             echo "🆕 Header eksik: $KERNEL_VERSION"
 
-            $SUDO apt-get install -y \
-                -t trixie-backports \
-                "linux-headers-$KERNEL_VERSION"
+            if apt-cache show "linux-headers-$KERNEL_VERSION" >/dev/null 2>&1; then
+                $SUDO apt-get install -y "linux-headers-$KERNEL_VERSION"
+            else
+                echo "⚠️ $KERNEL_VERSION için header artık depoda yok; eski kernel atlandı."
+            fi
         fi
 
     done
@@ -303,7 +304,7 @@ if lspci | grep -qi "NVIDIA"; then
     echo
     echo "DKMS tüm kurulu kernel'ler için çalıştırılıyor..."
 
-    $SUDO dkms autoinstall || true
+    $SUDO dkms autoinstall -k "$(uname -r)"
 
     $SUDO depmod -a
 
@@ -336,8 +337,7 @@ echo "=============================="
 
 $SUDO chsh -s /usr/bin/fish "$TARGET_USER"
 
-curl -sS https://starship.rs/install.sh |
-    sh -s -- -y
+echo "✅ Starship APT üzerinden kuruldu; uzaktan script çalıştırılmıyor."
 
 # ============================================================
 # FLATPAK
@@ -366,22 +366,16 @@ $SUDO flatpak install flathub -y \
     com.heroicgameslauncher.hgl
 
 # ============================================================
-# WINETRICKS
+# WINETRICKS (isteğe bağlı, ayrı ve güvenli prefix)
 # ============================================================
 
-echo
-echo "=============================="
-echo "== WINETRICKS =="
-echo "=============================="
-
-winetricks -q \
-    dotnet40 \
-    dotnet45 \
-    dotnet48 \
-    vcrun2022 \
-    vcrun6sp6 \
-    allfonts \
-    dxvk2030
+if [[ "$FSKS_WINETRICKS" == "1" ]]; then
+    mkdir -p "$HOME/.local/share/wineprefixes"
+    export WINEPREFIX="$HOME/.local/share/wineprefixes/fsks"
+    winetricks -q dotnet48 vcrun2022 corefonts
+else
+    echo "ℹ️ Wine prefix'i korunuyor (FSKS_WINETRICKS=1 ile kurulum)."
+fi
 
 # ============================================================
 # zRAM / SWAP
@@ -394,6 +388,7 @@ echo "=============================="
 
 $SUDO apt install -y zram-tools
 
+backup_once /etc/default/zramswap
 $SUDO tee /etc/default/zramswap >/dev/null <<EOF
 ALGO=zstd
 PERCENT=50
@@ -425,35 +420,40 @@ echo "Swappiness:"
 cat /proc/sys/vm/swappiness
 
 # ============================================================
-# FISH CONFIG
+# FISH CONFIG: kullanıcı ayarlarını ezmeden FSKS bloğu ekle
 # ============================================================
 
-echo
-echo "=============================="
-echo "== FISH YAPILANDIRMASI =="
-echo "=============================="
-
 mkdir -p "$HOME/.config/fish"
+FISH_CONFIG="$HOME/.config/fish/config.fish"
+if [[ -f "$FISH_CONFIG" ]] && grep -Fq '# >>> FSKS >>>' "$FISH_CONFIG"; then
+    echo "✅ FSKS Fish bloğu zaten var."
+else
+    if [[ -f "$FISH_CONFIG" ]]; then
+        cp -a "$FISH_CONFIG" "$FISH_CONFIG.fsks.bak"
+    fi
+    cat >> "$FISH_CONFIG" <<'EOF'
 
-cat > "$HOME/.config/fish/config.fish" <<'EOF'
+# >>> FSKS >>>
 if status is-interactive
-    echo " "
-    set_color normal
-    fastfetch
-    echo
+    if type -q fastfetch
+        fastfetch
+    end
+    if type -q starship
+        starship init fish | source
+    end
 end
 
-starship init fish | source
-
-alias güncelle='sudo apt update || true && sudo apt upgrade -y && sudo flatpak update'
+alias güncelle='sudo apt update && sudo apt upgrade -y && flatpak update'
 alias temizle='sudo apt autoremove && sudo apt autoclean -y && flatpak uninstall --unused'
 alias yükle='sudo apt install'
-alias fyükle='sudo flatpak install'
+alias fyükle='flatpak install'
 alias sil='sudo apt remove'
-alias fsil='sudo flatpak remove'
+alias fsil='flatpak remove'
 alias kapa='poweroff'
 alias söyle='echo'
+# <<< FSKS <<<
 EOF
+fi
 
 # ============================================================
 # JETBRAINS MONO NERD FONT
@@ -466,15 +466,16 @@ echo "=============================="
 
 mkdir -p "$HOME/.local/share/fonts"
 
-curl -sSL \
-    -o /tmp/JetBrainsMono.zip \
-    https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip
-
-unzip -o \
-    /tmp/JetBrainsMono.zip \
-    -d "$HOME/.local/share/fonts"
-
-rm -f /tmp/JetBrainsMono.zip
+FONT_TMP="$(mktemp --suffix=.zip)"
+if curl --fail --location --silent --show-error --retry 3 \
+        -o "$FONT_TMP" \
+        https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip \
+    && unzip -tq "$FONT_TMP" >/dev/null; then
+    unzip -oq "$FONT_TMP" -d "$HOME/.local/share/fonts"
+else
+    echo "⚠️ Font indirilemedi / arşiv bozuk; kuruluma devam."
+fi
+rm -f "$FONT_TMP"
 
 fc-cache -fv
 
@@ -489,6 +490,7 @@ echo "=============================="
 
 mkdir -p "$HOME/.config/fastfetch"
 
+if [[ ! -e "$HOME/.config/fastfetch/config.jsonc" ]]; then
 cat > "$HOME/.config/fastfetch/config.jsonc" <<'EOF'
 {
   "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/master/doc/json_schema.json",
@@ -504,10 +506,8 @@ cat > "$HOME/.config/fastfetch/config.jsonc" <<'EOF'
   },
 
   "logo": {
-    "type": "kitty-direct",
-    "source": "~/.config/fastfetch/marin.png",
-    "width": 20,
-    "height": 10
+    "type": "builtin",
+    "source": "debian"
   },
 
   "modules": [
@@ -585,6 +585,7 @@ cat > "$HOME/.config/fastfetch/config.jsonc" <<'EOF'
   ]
 }
 EOF
+fi
 
 # ============================================================
 # BİTİŞ
@@ -608,8 +609,8 @@ nvidia-smi 2>/dev/null ||
 
 echo
 echo "GRUB:"
-grep '^GRUB_TIMEOUT=' /etc/default/grub
-grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub
+grep '^GRUB_TIMEOUT=' /etc/default/grub || true
+grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub || true
 
 echo
 echo "========================================"
