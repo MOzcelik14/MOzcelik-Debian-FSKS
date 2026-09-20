@@ -73,6 +73,26 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn("GRUB_TIMEOUT=0", SOURCE)
 
 
+    def test_official_nvidia_is_installed_before_backports_kernel(self):
+        self.assertIn('FSKS_BACKPORTS_KERNEL="${FSKS_BACKPORTS_KERNEL:-1}"', SOURCE)
+        self.assertIn('FSKS_NVIDIA_SOURCE="${FSKS_NVIDIA_SOURCE:-official}"', SOURCE)
+        self.assertIn('if [[ "$FSKS_NVIDIA_SOURCE" == "official" ]]', SOURCE)
+        self.assertIn("cuda-keyring_1.1-1_all.deb", SOURCE)
+        self.assertIn("debian13/x86_64", SOURCE)
+        self.assertIn("sudo apt-get install -y nvidia-open", SOURCE)
+        self.assertIn("nvidia-driver-libs:i386", SOURCE)
+        self.assertIn('sudo dkms autoinstall -k "$(uname -r)"', SOURCE)
+        self.assertIn('sudo apt-mark manual "$OLD_KERNEL_PACKAGE"', SOURCE)
+        nvidia = SOURCE.index('ui_step "NVIDIA sürücüsü"')
+        kernel = SOURCE.index('ui_step "Kernel kontrolü"')
+        self.assertLess(nvidia, kernel, "Official driver must precede kernel install")
+        self.assertLess(
+            SOURCE.index("sudo apt-get install -y nvidia-open"),
+            SOURCE.index("sudo apt-get install -y -t trixie-backports"),
+        )
+        self.assertIn('FSKS_NVIDIA_SOURCE" == "debian"', SOURCE)
+        self.assertIn('FSKS_ALLOW_NVIDIA_BACKPORTS" != "1"', SOURCE)
+
     def test_preview_is_read_only_and_plain_in_ci(self):
         env = os.environ.copy()
         env["NO_COLOR"] = "1"
