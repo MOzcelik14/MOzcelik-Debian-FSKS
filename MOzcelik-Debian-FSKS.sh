@@ -181,6 +181,8 @@ SUDO="sudo"
 # DEBIAN KAYNAKLARI / BACKPORTS / i386
 # ============================================================
 
+ui_step "APT kaynakları"
+
 backup_once() {
     local file="$1"
     if [[ -f "$file" && ! -e "$file.fsks.bak" ]]; then
@@ -255,10 +257,8 @@ sudo apt-get update
 # KERNEL: Trixie stable varsayılan; backports açıkça istenirse
 # ============================================================
 
-echo
-echo "=============================="
-echo "== KERNEL KONTROLÜ =="
-echo "=============================="
+ui_step "Kernel kontrolü"
+
 echo "Aktif kernel: $(uname -r)"
 
 if [[ "$FSKS_BACKPORTS_KERNEL" == "1" ]]; then
@@ -300,6 +300,8 @@ fi
 # GRUB: makineye özgü ayarlar varsayılan kapalı
 # ============================================================
 
+ui_step "GRUB"
+
 if [[ "$FSKS_GRUB_TUNING" == "1" ]]; then
     backup_once /etc/default/grub
     if ! grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
@@ -326,6 +328,8 @@ fi
 # İSTEĞE BAĞLI PAKET TEMİZLİĞİ
 # ============================================================
 
+ui_step "İsteğe bağlı temizlik"
+
 if [[ "$FSKS_PURGE_APPS" == "1" ]]; then
     sudo systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
     sudo apt-get purge -y thunderbird transmission-gtk warpinator rhythmbox
@@ -342,10 +346,8 @@ fi
 # TEMEL PAKETLER
 # ============================================================
 
-echo
-echo "=============================="
-echo "== TEMEL PAKETLER =="
-echo "=============================="
+ui_step "Temel paketler"
+
 
 $SUDO apt-get install -y \
     fish starship fastfetch pciutils fontconfig btop unzip curl
@@ -361,10 +363,8 @@ done
 # NVIDIA
 # ============================================================
 
-echo
-echo "=============================="
-echo "== NVIDIA SÜRÜCÜSÜ =="
-echo "=============================="
+ui_step "NVIDIA sürücüsü"
+
 
 # ============================================================
 # NVIDIA DONANIM KONTROLÜ
@@ -431,10 +431,8 @@ fi
 # FISH
 # ============================================================
 
-echo
-echo "=============================="
-echo "== FISH =="
-echo "=============================="
+ui_step "Fish & Starship"
+
 
 if [[ "$FSKS_CHANGE_SHELL" == "1" ]]; then
     FISH_PATH="$(command -v fish)"
@@ -450,6 +448,8 @@ echo "✅ Starship APT üzerinden kuruldu; uzaktan script çalıştırılmıyor.
 # ============================================================
 # FLATPAK
 # ============================================================
+
+ui_step "Flatpak uygulamaları"
 
 if [[ "$FSKS_INSTALL_FLATPAKS" == "1" ]]; then
     sudo apt-get install -y flatpak
@@ -479,6 +479,8 @@ fi
 # WINETRICKS (isteğe bağlı, ayrı ve güvenli prefix)
 # ============================================================
 
+ui_step "Winetricks"
+
 if [[ "$FSKS_WINETRICKS" == "1" ]]; then
     mkdir -p "$HOME/.local/share/wineprefixes"
     export WINEPREFIX="$HOME/.local/share/wineprefixes/fsks"
@@ -491,10 +493,8 @@ fi
 # zRAM / SWAP
 # ============================================================
 
-echo
-echo "=============================="
-echo "== zRAM / SWAP =="
-echo "=============================="
+ui_step "zRAM & swap"
+
 
 $SUDO apt install -y zram-tools
 
@@ -538,6 +538,8 @@ cat /proc/sys/vm/swappiness
 # FISH CONFIG: kullanıcı ayarlarını ezmeden FSKS bloğu ekle
 # ============================================================
 
+ui_step "Fish yapılandırması"
+
 mkdir -p "$HOME/.config/fish"
 FISH_CONFIG="$HOME/.config/fish/config.fish"
 if [[ -f "$FISH_CONFIG" ]] && grep -Fq '# >>> FSKS >>>' "$FISH_CONFIG"; then
@@ -574,6 +576,8 @@ fi
 # JETBRAINS MONO NERD FONT
 # ============================================================
 
+ui_step "Nerd Font"
+
 if [[ "$FSKS_INSTALL_FONT" == "1" ]]; then
     mkdir -p "$HOME/.local/share/fonts"
     if compgen -G "$HOME/.local/share/fonts/JetBrainsMonoNerdFont*.ttf" >/dev/null; then
@@ -599,10 +603,8 @@ fi
 # FASTFETCH
 # ============================================================
 
-echo
-echo "=============================="
-echo "== FASTFETCH =="
-echo "=============================="
+ui_step "Fastfetch"
+
 
 mkdir -p "$HOME/.config/fastfetch"
 
