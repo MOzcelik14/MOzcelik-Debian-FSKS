@@ -20,7 +20,7 @@ Root olarak değil, sudo yetkili normal kullanıcıyla çalıştırın. Kernel d
 - NVIDIA GPU varsa Trixie sürücü paketlerini ve **aktif kernel** header'larını kurar. Secure Boot açıksa modül imzası ayrıca gerekebilir. Yeni kernelde 550 sürücüsünün derlenmesi garanti edilmez.
 - Flathub ile Kdenlive, Audacity, OnlyOffice, Heroic, Android Studio vb. Flatpak uygulamalarını kurar.
 - Fish'e tekrar eklenmeyen bir FSKS bloğu, alias'lar ve Starship ekler; var olan Fish ve Fastfetch yapılandırmalarını korur.
-- JetBrainsMono Nerd Font'u yalnızca eksikse indirir; zRAM'i RAM'in %50'si ve zstd ile ayarlar; varsayılan swappiness=100 uygular (değiştirilebilir).
+- JetBrainsMono Nerd Font'u yalnızca eksikse indirir; zRAM'i RAM'in %50'si ve zstd ile ayarlar; varsayılan swappiness=4 uygular (değiştirilebilir).
 
 **Swap dosyası oluşturmaz.** Önceden var olan swap dosyası/bölümü korunur. Fastfetch'te yeni bir yapılandırma üretirken yerleşik Debian logosunu kullanır.
 
@@ -35,13 +35,13 @@ Varsayılan çalıştırma var olan uygulamaları ve GRUB ayarlarını değişti
 | `FSKS_WINETRICKS=1` | Dotnet48, vcrun2022, corefonts'u yalnızca `~/.local/share/wineprefixes/fsks` içine kurar. |
 | `FSKS_BACKPORTS_KERNEL=1` | En yeni backports kernel ve header'larını kurar. NVIDIA bulunan makinelerde ek onay gerektirir. |
 | `FSKS_ALLOW_NVIDIA_BACKPORTS=1` | Backports kerneli NVIDIA ile deneme riskini açıkça kabul eder. **DKMS derlemesi başarısız olabilir.** |
-| `FSKS_SWAPPINESS=4` | İstenirse kişisel swappiness değerini kullanır (0–200); varsayılan 100. |
+| `FSKS_SWAPPINESS=100` | İstenirse zRAM'i daha aktif kullanmak için farklı swappiness değeri seçer (0–200); varsayılan 4. |
 | `FSKS_INSTALL_NVIDIA=0` | NVIDIA sürücüsünü kurmayı atlar (GPU bulunsa bile). |
 | `FSKS_CHANGE_SHELL=0` | Varsayılan shell'in Fish olarak değiştirilmesini engeller. |
 | `FSKS_INSTALL_FLATPAKS=0` | Flatpak uygulamalarını atlar. |
 | `FSKS_INSTALL_FONT=0` | Font indirmesini atlar. |
 
-Örnek: `FSKS_GRUB_TUNING=1 FSKS_SWAPPINESS=4 bash MOzcelik-Debian-FSKS.sh`
+Örnek: `FSKS_GRUB_TUNING=1 FSKS_SWAPPINESS=100 bash MOzcelik-Debian-FSKS.sh`
 
 **NVIDIA kullananlar için:** `FSKS_BACKPORTS_KERNEL=1` seçimini zorunlu olmadıkça kullanmayın. Script, `FSKS_ALLOW_NVIDIA_BACKPORTS=1` verilmedikçe NVIDIA'lı sistemde bu işlemi reddeder. Bu bayrak uyumluluğu garanti etmez.
 
