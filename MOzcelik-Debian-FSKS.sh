@@ -309,7 +309,10 @@ if lspci | grep -qi "NVIDIA"; then
     if $SUDO modprobe nvidia 2>/dev/null; then
         echo "✅ NVIDIA kernel modülü yüklendi."
     else
-        echo "⚠️ NVIDIA modülü şu anda yüklenemedi."
+        echo "⚠️ NVIDIA modülü henüz yüklenemedi; nouveau / Secure Boot / reboot durumunu kontrol et."
+        if command -v mokutil >/dev/null && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
+            echo "⚠️ Secure Boot açık. DKMS modülü için imzalama / MOK kaydı gerekebilir."
+        fi
     fi
 
 else
@@ -329,7 +332,14 @@ echo "=============================="
 echo "== FISH =="
 echo "=============================="
 
-$SUDO chsh -s /usr/bin/fish "$TARGET_USER"
+if [[ "$FSKS_CHANGE_SHELL" == "1" ]]; then
+    FISH_PATH="$(command -v fish)"
+    if [[ "$(getent passwd "$TARGET_USER" | cut -d: -f7)" != "$FISH_PATH" ]]; then
+        $SUDO chsh -s "$FISH_PATH" "$TARGET_USER"
+    fi
+else
+    echo "ℹ️ Varsayılan shell korunuyor (FSKS_CHANGE_SHELL=1 ile değiştirilir)."
+fi
 
 echo "✅ Starship APT üzerinden kuruldu; uzaktan script çalıştırılmıyor."
 
@@ -337,27 +347,29 @@ echo "✅ Starship APT üzerinden kuruldu; uzaktan script çalıştırılmıyor.
 # FLATPAK
 # ============================================================
 
-echo
-echo "=============================="
-echo "== FLATPAK =="
-echo "=============================="
+if [[ "$FSKS_INSTALL_FLATPAKS" == "1" ]]; then
+    sudo apt-get install -y flatpak
+    sudo flatpak remote-add --if-not-exists flathub \
+        https://flathub.org/repo/flathub.flatpakrepo
 
-$SUDO apt install -y flatpak
-
-$SUDO flatpak remote-add \
-    --if-not-exists \
-    flathub \
-    https://flathub.org/repo/flathub.flatpakrepo
-
-$SUDO flatpak install flathub -y \
-    org.kde.kdenlive \
-    app.zen_browser.zen \
-    org.audacityteam.Audacity \
-    org.nickvision.tubeconverter \
-    org.onlyoffice.desktopeditors \
-    net.davidotek.pupgui2 \
-    com.google.AndroidStudio \
-    com.heroicgameslauncher.hgl
+    OPTIONAL_FLATPAKS=(
+        org.kde.kdenlive
+        app.zen_browser.zen
+        org.audacityteam.Audacity
+        org.nickvision.tubeconverter
+        org.onlyoffice.desktopeditors
+        net.davidotek.pupgui2
+        com.google.AndroidStudio
+        com.heroicgameslauncher.hgl
+    )
+    for app in "${OPTIONAL_FLATPAKS[@]}"; do
+        if ! sudo flatpak install --noninteractive -y flathub "$app"; then
+            echo "⚠️ Flatpak kurulamadı: $app (diğer uygulamalara devam)."
+        fi
+    done
+else
+    echo "ℹ️ Flatpak uygulamaları atlandı (FSKS_INSTALL_FLATPAKS=1)."
+fi
 
 # ============================================================
 # WINETRICKS (isteğe bağlı, ayrı ve güvenli prefix)
@@ -392,10 +404,10 @@ EOF
 $SUDO systemctl enable zramswap
 $SUDO systemctl restart zramswap
 
-echo "vm.swappiness=4" |
+echo "vm.swappiness=$FSKS_SWAPPINESS" |
     $SUDO tee /etc/sysctl.d/99-swappiness.conf >/dev/null
 
-$SUDO sysctl --system
+$SUDO sysctl -w "vm.swappiness=$FSKS_SWAPPINESS"
 
 echo
 echo "Bellek durumu:"
