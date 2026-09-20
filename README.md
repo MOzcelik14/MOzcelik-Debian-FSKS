@@ -22,6 +22,8 @@ Root olarak değil, sudo yetkili normal kullanıcıyla çalıştırın. Kernel d
 - Fish'e tekrar eklenmeyen bir FSKS bloğu, alias'lar ve Starship ekler; var olan Fish ve Fastfetch yapılandırmalarını korur.
 - JetBrainsMono Nerd Font'u yalnızca eksikse indirir; zRAM'i RAM'in %50'si ve zstd ile ayarlar; varsayılan swappiness=4 uygular (değiştirilebilir).
 
+zRAM kullanımdayken ayar değişmişse hizmeti zorla yeniden başlatmaz; yeni zRAM ayarları yeniden başlatma sonrasında uygulanır.
+
 **Swap dosyası oluşturmaz.** Önceden var olan swap dosyası/bölümü korunur. Fastfetch'te yeni bir yapılandırma üretirken yerleşik Debian logosunu kullanır.
 
 ## İsteğe bağlı kişisel işlemler
