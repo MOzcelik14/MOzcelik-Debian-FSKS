@@ -1,0 +1,34 @@
+name: Validate installer
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+  pull_request:
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n MOzcelik-Debian-FSKS.sh
+      - name: ShellCheck errors and warnings
+        run: shellcheck --severity=warning MOzcelik-Debian-FSKS.sh
+      - name: Regression tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Fastfetch JSONC syntax
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+          script = Path("MOzcelik-Debian-FSKS.sh").read_text()
+          match = re.search(
+              r'cat > "\$HOME/\.config/fastfetch/config\.jsonc" <<\x27EOF\x27\n(.*?)\nEOF',
+              script, re.S,
+          )
+          assert match, "Fastfetch config heredoc not found"
+          json.loads(match.group(1))
+          print("Fastfetch JSONC: valid JSON")
+          PY
