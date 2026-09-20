@@ -89,14 +89,23 @@ update_components() {
       }
       /^deb(-src)?[[:space:]]/ {
         # Eski tip apt satırlarında mevcut alanları muhafaza et.
-        split($0, parts, /[[:space:]]+#/)
-        line=parts[1]
+        line=$0
+        comment=""
+        if (match(line, /[[:space:]]+#/)) {
+          comment=substr(line, RSTART)
+          line=substr(line, 1, RSTART-1)
+        }
+        # Modify only Debian archive/mirror Trixie entries.
+        if (line !~ /(^|[[:space:]])trixie(-updates|-security|-backports)?([[:space:]]|$)/ ||
+            line !~ /(deb\.debian\.org|security\.debian\.org|\/debian([\/[:space:]]|$)|\/debian-security([\/[:space:]]|$))/) {
+          next
+        }
+        gsub(/[[:space:]]+$/, "", line)
         for (i=1; i<=3; i++) {
           c=(i==1 ? "contrib" : i==2 ? "non-free" : "non-free-firmware")
           if (index(" " line " ", " " c " ") == 0) line=line " " c
         }
-        if (length(parts[2])) line=line " #" parts[2]
-        $0=line
+        $0=line comment
       }
       {print}
     ' "$file" > "$tmp"
@@ -265,38 +274,28 @@ if lspci | grep -qi "NVIDIA"; then
         build-essential
 
     echo
-    echo "Kurulu kernel'lerin header'ları kontrol ediliyor..."
-
-    for KERNEL in /lib/modules/*; do
-
-        KERNEL_VERSION="$(basename "$KERNEL")"
-
-        if [ -f "$KERNEL/build/Makefile" ]; then
-            echo "✅ Header mevcut: $KERNEL_VERSION"
+    echo "Aktif kernel header'ları kontrol ediliyor..."
+    ACTIVE_HEADERS="linux-headers-$(uname -r)"
+    if [[ ! -f "/lib/modules/$(uname -r)/build/Makefile" ]]; then
+        if apt-cache show "$ACTIVE_HEADERS" >/dev/null 2>&1; then
+            $SUDO apt-get install -y "$ACTIVE_HEADERS"
         else
-            echo "🆕 Header eksik: $KERNEL_VERSION"
-
-            if apt-cache show "linux-headers-$KERNEL_VERSION" >/dev/null 2>&1; then
-                $SUDO apt-get install -y "linux-headers-$KERNEL_VERSION"
-            else
-                echo "⚠️ $KERNEL_VERSION için header artık depoda yok; eski kernel atlandı."
-            fi
+            echo "❌ Aktif kernel için header bulunamadı: $ACTIVE_HEADERS" >&2
+            exit 1
         fi
-
-    done
+    fi
 
     echo
     echo "NVIDIA sürücüsü kuruluyor..."
-    echo "Kaynak: trixie-backports"
+    echo "Kaynak: Debian Trixie (APT sürüm adayı)"
 
     $SUDO apt-get install -y \
-        -t trixie-backports \
         nvidia-driver \
         nvidia-settings \
         nvidia-kernel-dkms
 
     echo
-    echo "DKMS tüm kurulu kernel'ler için çalıştırılıyor..."
+    echo "DKMS aktif kernel için kontrol ediliyor..."
 
     $SUDO dkms autoinstall -k "$(uname -r)"
 
