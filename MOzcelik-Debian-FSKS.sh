@@ -1,6 +1,5 @@
 #!/bin/bash
 set -Eeuo pipefail
-trap 'printf "❌ Satır %s: komut başarısız oldu (çıkış: %s).\n" "$LINENO" "$?" >&2' ERR
 
 # ============================================================
 # DEBIAN TRIXIE KURULUM / AYAR SCRIPTİ
@@ -21,6 +20,119 @@ FSKS_CHANGE_SHELL="${FSKS_CHANGE_SHELL:-1}"
 FSKS_INSTALL_FLATPAKS="${FSKS_INSTALL_FLATPAKS:-1}"
 FSKS_INSTALL_FONT="${FSKS_INSTALL_FONT:-1}"
 FSKS_INSTALL_NVIDIA="${FSKS_INSTALL_NVIDIA:-1}"
+
+# ============================================================
+# FSKS TERMINAL UI (yerleşik, ek bağımlılık gerektirmez)
+# ============================================================
+
+FSKS_START_SECONDS=$SECONDS
+FSKS_STAGE=0
+FSKS_STAGE_TOTAL=13
+FSKS_STAGE_NAME="Başlangıç"
+
+if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${NO_COLOR+x}" ]]; then
+    UI_RESET=$'\033[0m'
+    UI_BOLD=$'\033[1m'
+    UI_MUTED=$'\033[2m'
+    UI_CYAN=$'\033[36m'
+    UI_BLUE=$'\033[34m'
+    UI_GREEN=$'\033[32m'
+    UI_YELLOW=$'\033[33m'
+    UI_RED=$'\033[31m'
+else
+    UI_RESET="" UI_BOLD="" UI_MUTED="" UI_CYAN=""
+    UI_BLUE="" UI_GREEN="" UI_YELLOW="" UI_RED=""
+fi
+
+ui_line() {
+    printf '%s\n' '  --------------------------------------------------'
+}
+
+ui_banner() {
+    printf '\n'
+    printf '  %s%s  F S K S  /  DEBIAN SETUP %s\n' "$UI_BOLD" "$UI_CYAN" "$UI_RESET"
+    printf '  %s     Debian 13 · Trixie · GNOME%s\n' "$UI_MUTED" "$UI_RESET"
+    ui_line
+    printf '  %sKullanıcı%s  %s\n' "$UI_MUTED" "$UI_RESET" "$(id -un)"
+    printf '  %sKernel%s    %s\n' "$UI_MUTED" "$UI_RESET" "$(uname -r)"
+    printf '  %sAşamalar%s  %s\n' "$UI_MUTED" "$UI_RESET" "$FSKS_STAGE_TOTAL"
+    printf '  %sBilgi:%s Paket yöneticisi çıktıları aşağıda gösterilir.\n' "$UI_CYAN" "$UI_RESET"
+}
+
+ui_step() {
+    FSKS_STAGE=$((FSKS_STAGE + 1))
+    FSKS_STAGE_NAME="$1"
+    local filled empty done_bar todo_bar
+    filled=$((FSKS_STAGE * 30 / FSKS_STAGE_TOTAL))
+    empty=$((30 - filled))
+    printf -v done_bar '%*s' "$filled" ''
+    printf -v todo_bar '%*s' "$empty" ''
+    done_bar="${done_bar// /#}"
+    todo_bar="${todo_bar// /-}"
+    printf '\n'
+    ui_line
+    printf '  %s%s[%02d/%02d]%s  %s\n' "$UI_BOLD" "$UI_CYAN" "$FSKS_STAGE" "$FSKS_STAGE_TOTAL" "$UI_RESET" "$FSKS_STAGE_NAME"
+    printf '  %s[%s%s%s]%s  %d%%\n' "$UI_BLUE" "$UI_GREEN" "$done_bar" "$todo_bar" "$UI_RESET" \
+        "$((FSKS_STAGE * 100 / FSKS_STAGE_TOTAL))"
+    printf '\n'
+}
+
+ui_success() { printf '  %s[ OK ]%s %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
+ui_info()    { printf '  %s[INFO]%s %s\n' "$UI_CYAN" "$UI_RESET" "$*"; }
+ui_warn()    { printf '  %s[UYARI]%s %s\n' "$UI_YELLOW" "$UI_RESET" "$*" >&2; }
+ui_error()   { printf '  %s[HATA]%s %s\n' "$UI_RED" "$UI_RESET" "$*" >&2; }
+
+ui_finish() {
+    local elapsed=$((SECONDS - FSKS_START_SECONDS))
+    printf '\n'
+    ui_line
+    printf '  %s%s  KURULUM TAMAMLANDI%s\n' "$UI_BOLD" "$UI_GREEN" "$UI_RESET"
+    printf '  %sToplam süre:%s %02d:%02d\n' "$UI_MUTED" "$UI_RESET" "$((elapsed / 60))" "$((elapsed % 60))"
+    printf '  %sEtkin kernel:%s %s\n' "$UI_MUTED" "$UI_RESET" "$(uname -r)"
+    ui_line
+    printf '\n'
+}
+
+fsks_on_error() {
+    local code="$1" line="$2"
+    ui_error "Aşama ${FSKS_STAGE}/${FSKS_STAGE_TOTAL} (${FSKS_STAGE_NAME}), satır ${line}; çıkış kodu ${code}."
+    ui_info "Hata giderildikten sonra betiği yeniden çalıştırabilirsin." >&2
+}
+trap 'fsks_on_error "$?" "$LINENO"' ERR
+
+# Gerçek kuruluma dokunmadan tasarım önizlemesi.
+case "${1:-}" in
+    --preview)
+        ui_banner
+        for stage in \
+            "APT kaynakları" "Kernel kontrolü" "GRUB" "İsteğe bağlı temizlik" \
+            "Temel paketler" "NVIDIA sürücüsü" "Fish & Starship" \
+            "Flatpak uygulamaları" "Winetricks" "zRAM & swap" \
+            "Fish yapılandırması" "Nerd Font" "Fastfetch"; do
+            ui_step "$stage"
+            ui_success "Örnek çıktı — gerçek kurulum yapılmadı."
+        done
+        ui_warn "Önizleme modu: hiçbir paket veya sistem ayarı değiştirilmedi."
+        ui_finish
+        exit 0
+        ;;
+    --help|-h)
+        printf 'Kullanım: bash %s [--preview|--help]\n' "$(basename "$0")"
+        printf '  --preview    Kurulumun görsel önizlemesi (değişiklik yapmaz).\n'
+        printf '  --help       Bu yardım metni.\n'
+        printf 'Renkleri kapatmak için NO_COLOR=1 kullan.\n'
+        exit 0
+        ;;
+    "")
+        ;;
+    *)
+        ui_error "Bilinmeyen argüman: $1 (kullanım için --help)."
+        exit 2
+        ;;
+esac
+
+ui_banner
+
 
 for setting in FSKS_PURGE_APPS FSKS_GRUB_TUNING FSKS_WINETRICKS FSKS_BACKPORTS_KERNEL FSKS_ALLOW_NVIDIA_BACKPORTS FSKS_CHANGE_SHELL FSKS_INSTALL_FLATPAKS FSKS_INSTALL_FONT FSKS_INSTALL_NVIDIA; do
     if [[ "${!setting}" != "0" && "${!setting}" != "1" ]]; then
