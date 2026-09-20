@@ -14,6 +14,23 @@ SCRIPT_PATH="$(realpath "$0")"
 FSKS_PURGE_APPS="${FSKS_PURGE_APPS:-0}"
 FSKS_GRUB_TUNING="${FSKS_GRUB_TUNING:-0}"
 FSKS_WINETRICKS="${FSKS_WINETRICKS:-0}"
+FSKS_BACKPORTS_KERNEL="${FSKS_BACKPORTS_KERNEL:-0}"
+FSKS_ALLOW_NVIDIA_BACKPORTS="${FSKS_ALLOW_NVIDIA_BACKPORTS:-0}"
+FSKS_SWAPPINESS="${FSKS_SWAPPINESS:-100}"
+FSKS_CHANGE_SHELL="${FSKS_CHANGE_SHELL:-1}"
+FSKS_INSTALL_FLATPAKS="${FSKS_INSTALL_FLATPAKS:-1}"
+FSKS_INSTALL_FONT="${FSKS_INSTALL_FONT:-1}"
+
+for setting in FSKS_PURGE_APPS FSKS_GRUB_TUNING FSKS_WINETRICKS FSKS_BACKPORTS_KERNEL FSKS_ALLOW_NVIDIA_BACKPORTS FSKS_CHANGE_SHELL FSKS_INSTALL_FLATPAKS FSKS_INSTALL_FONT; do
+    if [[ "${!setting}" != "0" && "${!setting}" != "1" ]]; then
+        printf '❌ %s yalnızca 0 veya 1 olabilir.\n' "$setting" >&2
+        exit 1
+    fi
+done
+if ! [[ "$FSKS_SWAPPINESS" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|200)$ ]]; then
+    echo "❌ FSKS_SWAPPINESS 0–200 arasında olmalıdır." >&2
+    exit 1
+fi
 
 # ============================================================
 # ROOT KONTROLÜ
@@ -112,71 +129,48 @@ fi
 sudo apt-get update
 
 # ============================================================
-# KERNEL KONTROLÜ
+# KERNEL: Trixie stable varsayılan; backports açıkça istenirse
 # ============================================================
 
 echo
 echo "=============================="
 echo "== KERNEL KONTROLÜ =="
 echo "=============================="
+echo "Aktif kernel: $(uname -r)"
 
-echo "Mevcut kernel:"
-uname -r
+if [[ "$FSKS_BACKPORTS_KERNEL" == "1" ]]; then
+    # NVIDIA 550 DKMS ve yeni backports kernel'leri birlikte garanti edilmez.
+    if grep -sqi '^0x10de$' /sys/bus/pci/devices/*/vendor 2>/dev/null \
+            && [[ "$FSKS_ALLOW_NVIDIA_BACKPORTS" != "1" ]]; then
+        echo "❌ NVIDIA algılandı. Backports kernel ve NVIDIA DKMS uyumu garanti edilemez." >&2
+        echo "   Stable kernel ile devam etmek için FSKS_BACKPORTS_KERNEL=0 kullan." >&2
+        echo "   Bilinçli olarak denemek için FSKS_ALLOW_NVIDIA_BACKPORTS=1 kullan." >&2
+        exit 1
+    fi
 
-echo
-echo "Kernel güncellemesi kontrol ediliyor..."
+    KERNEL_SIMULATION="$(sudo apt-get -s install -t trixie-backports \
+        linux-image-amd64 linux-headers-amd64)" || {
+        echo "❌ Backports kernel simülasyonu başarısız." >&2
+        exit 1
+    }
 
-KERNEL_UPDATE_AVAILABLE=0
+    if grep -Eq '^Inst linux-(image|headers)' <<< "$KERNEL_SIMULATION"; then
+        echo "🆕 Backports kernel + header yükleniyor."
+        sudo apt-get install -y -t trixie-backports \
+            linux-image-amd64 linux-headers-amd64
+    fi
 
-KERNEL_SIMULATION="$($SUDO apt-get -s install -t trixie-backports \
-    linux-image-amd64 linux-headers-amd64)" || {
-    echo "❌ Backports kernel paketleri kontrol edilemedi." >&2
-    exit 1
-}
-if grep -Eq '^Inst linux-(image|headers)' <<< "$KERNEL_SIMULATION"; then
-    KERNEL_UPDATE_AVAILABLE=1
-fi
-
-if [ "$KERNEL_UPDATE_AVAILABLE" -eq 1 ]; then
-
-    echo
-    echo "🆕 Yeni kernel bulundu (trixie-backports)."
-    echo "Kernel ve header paketleri kuruluyor..."
-    echo
-
-    $SUDO apt-get install -y \
-        -t trixie-backports \
-        linux-image-amd64 \
-        linux-headers-amd64
-
-    echo
-    echo "✅ Yeni kernel kuruldu."
-    echo
-    echo "========================================"
-    echo "== YENİDEN BAŞLATMA GEREKİYOR =="
-    echo "========================================"
-    echo
-    echo "🔄 Yeni kernel'in aktif olması için sistemi"
-    echo "   yeniden başlatman gerekiyor."
-    echo
-    echo "▶️  Yeniden başlattıktan sonra bu script'i"
-    echo "    tekrar çalıştır:"
-    echo
-    echo "    $SCRIPT_PATH"
-    echo
-    echo "    (kernel artık güncel olduğu için bu adım"
-    echo "     atlanacak ve script GRUB ayarlarından"
-    echo "     devam edecek.)"
-    echo
-
-    exit 0
-
+    # Kaldığı yerden eski kernel ile sürücü kurmaya devam ETME.
+    EXPECTED_KERNEL="$(dpkg-query -W -f='${Depends}' linux-image-amd64 2>/dev/null \
+        | grep -oE 'linux-image-[^ ,(]+' | head -n 1 || true)"
+    EXPECTED_KERNEL="${EXPECTED_KERNEL#linux-image-}"
+    if [[ -n "$EXPECTED_KERNEL" && "$EXPECTED_KERNEL" != "$(uname -r)" ]]; then
+        echo "🔄 Kernel kurulu fakat aktif değil: $EXPECTED_KERNEL"
+        echo "   Yeniden başlat, sonra betiği tekrar çalıştır: $SCRIPT_PATH"
+        exit 0
+    fi
 else
-
-    echo
-    echo "✅ Yeni kernel bulunamadı."
-    echo "Mevcut kernel ile devam ediliyor."
-
+    echo "✅ Stable kernel korunuyor (FSKS_BACKPORTS_KERNEL=1 ile isteğe bağlı backports)."
 fi
 
 # ============================================================
