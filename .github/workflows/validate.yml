@@ -13,8 +13,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bash syntax
         run: bash -n MOzcelik-Debian-FSKS.sh
-      - name: ShellCheck errors
-        run: shellcheck --severity=error MOzcelik-Debian-FSKS.sh
+      - name: ShellCheck errors and warnings
+        run: shellcheck --severity=warning MOzcelik-Debian-FSKS.sh
       - name: Regression tests
         run: python3 -m unittest discover -s tests -v
       - name: Fastfetch JSONC syntax
