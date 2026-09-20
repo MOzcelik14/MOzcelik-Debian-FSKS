@@ -98,6 +98,7 @@ update_components() {
         # Modify only Debian archive/mirror Trixie entries.
         if (line !~ /(^|[[:space:]])trixie(-updates|-security|-backports)?([[:space:]]|$)/ ||
             line !~ /(deb\.debian\.org|security\.debian\.org|\/debian([\/[:space:]]|$)|\/debian-security([\/[:space:]]|$))/) {
+          print
           next
         }
         gsub(/[[:space:]]+$/, "", line)
