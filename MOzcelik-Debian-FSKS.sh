@@ -29,6 +29,7 @@ FSKS_START_SECONDS=$SECONDS
 FSKS_STAGE=0
 FSKS_STAGE_TOTAL=13
 FSKS_STAGE_NAME="Başlangıç"
+FSKS_WARNING_COUNT=0
 
 if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${NO_COLOR+x}" ]]; then
     UI_RESET=$'\033[0m'
@@ -79,7 +80,7 @@ ui_step() {
 
 ui_success() { printf '  %s[ OK ]%s %s\n' "$UI_GREEN" "$UI_RESET" "$*"; }
 ui_info()    { printf '  %s[INFO]%s %s\n' "$UI_CYAN" "$UI_RESET" "$*"; }
-ui_warn()    { printf '  %s[UYARI]%s %s\n' "$UI_YELLOW" "$UI_RESET" "$*" >&2; }
+ui_warn()    { FSKS_WARNING_COUNT=$((FSKS_WARNING_COUNT + 1)); printf '  %s[UYARI]%s %s\n' "$UI_YELLOW" "$UI_RESET" "$*" >&2; }
 ui_error()   { printf '  %s[HATA]%s %s\n' "$UI_RED" "$UI_RESET" "$*" >&2; }
 
 ui_finish() {
@@ -89,6 +90,7 @@ ui_finish() {
     printf '  %s%s  KURULUM TAMAMLANDI%s\n' "$UI_BOLD" "$UI_GREEN" "$UI_RESET"
     printf '  %sToplam süre:%s %02d:%02d\n' "$UI_MUTED" "$UI_RESET" "$((elapsed / 60))" "$((elapsed % 60))"
     printf '  %sEtkin kernel:%s %s\n' "$UI_MUTED" "$UI_RESET" "$(uname -r)"
+    printf '  %sUyarı sayısı:%s %d\n' "$UI_MUTED" "$UI_RESET" "$FSKS_WARNING_COUNT"
     ui_line
     printf '\n'
 }
@@ -150,7 +152,7 @@ fi
 # ============================================================
 
 if [ "$EUID" -eq 0 ]; then
-    echo "❌ Bu script root olarak çalıştırılmamalıdır."
+    ui_error "Bu script root olarak çalıştırılmamalıdır."
     echo "   Normal kullanıcı ile çalıştırın."
     exit 1
 fi
@@ -168,7 +170,7 @@ TARGET_USER="$(id -un)"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 
 if [ -z "$TARGET_HOME" ]; then
-    echo "❌ Kullanıcının home dizini bulunamadı."
+    ui_error "Kullanıcının home dizini bulunamadı."
     exit 1
 fi
 
@@ -187,7 +189,7 @@ backup_once() {
     local file="$1"
     if [[ -f "$file" && ! -e "$file.fsks.bak" ]]; then
         sudo cp -a "$file" "$file.fsks.bak"
-        echo "📦 Yedek: $file.fsks.bak"
+        ui_info "Yedek: $file.fsks.bak"
     fi
 }
 
@@ -228,7 +230,7 @@ update_components() {
     if ! cmp -s "$tmp" "$file"; then
         backup_once "$file"
         sudo install -m 0644 "$tmp" "$file"
-        echo "✅ Depo bileşenleri: $file"
+        ui_success "Depo bileşenleri: $file"
     fi
     rm -f "$tmp"
 }
@@ -245,7 +247,7 @@ Suites: trixie-backports
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
-    echo "✅ trixie-backports eklendi."
+    ui_success "trixie-backports eklendi."
 fi
 
 if ! dpkg --print-foreign-architectures | grep -qx i386; then
@@ -278,7 +280,7 @@ if [[ "$FSKS_BACKPORTS_KERNEL" == "1" ]]; then
     }
 
     if grep -Eq '^Inst linux-(image|headers)' <<< "$KERNEL_SIMULATION"; then
-        echo "🆕 Backports kernel + header yükleniyor."
+        ui_info "Backports kernel + header yükleniyor."
         sudo apt-get install -y -t trixie-backports \
             linux-image-amd64 linux-headers-amd64
     fi
@@ -288,12 +290,12 @@ if [[ "$FSKS_BACKPORTS_KERNEL" == "1" ]]; then
         | grep -oE 'linux-image-[^ ,(]+' | head -n 1 || true)"
     EXPECTED_KERNEL="${EXPECTED_KERNEL#linux-image-}"
     if [[ -n "$EXPECTED_KERNEL" && "$EXPECTED_KERNEL" != "$(uname -r)" ]]; then
-        echo "🔄 Kernel kurulu fakat aktif değil: $EXPECTED_KERNEL"
+        ui_warn "Kernel kurulu fakat aktif değil: $EXPECTED_KERNEL"
         echo "   Yeniden başlat, sonra betiği tekrar çalıştır: $SCRIPT_PATH"
         exit 0
     fi
 else
-    echo "✅ Stable kernel korunuyor (FSKS_BACKPORTS_KERNEL=1 ile isteğe bağlı backports)."
+    ui_success "Stable kernel korunuyor (FSKS_BACKPORTS_KERNEL=1 ile isteğe bağlı backports)."
 fi
 
 # ============================================================
@@ -321,7 +323,7 @@ if [[ "$FSKS_GRUB_TUNING" == "1" ]]; then
     fi
     sudo update-grub
 else
-    echo "ℹ️ GRUB korundu (FSKS_GRUB_TUNING=1 ile etkinleştirilebilir)."
+    ui_info "GRUB korundu (FSKS_GRUB_TUNING=1 ile etkinleştirilebilir)."
 fi
 
 # ============================================================
@@ -335,7 +337,7 @@ if [[ "$FSKS_PURGE_APPS" == "1" ]]; then
     sudo apt-get purge -y thunderbird transmission-gtk warpinator rhythmbox
     sudo apt-get autoremove --purge -y
 else
-    echo "ℹ️ Mevcut uygulamalar korundu (FSKS_PURGE_APPS=1 ile temizlik)."
+    ui_info "Mevcut uygulamalar korundu (FSKS_PURGE_APPS=1 ile temizlik)."
 fi
 
 # ============================================================
@@ -355,7 +357,7 @@ $SUDO apt-get install -y \
 # Eksik bir oyun/multimedya paketi kalan kurulum adımlarını engellemesin.
 for pkg in numlockx steam-installer wine wine32 winetricks audacious rar unrar; do
     if ! $SUDO apt-get install -y "$pkg"; then
-        echo "⚠️ İsteğe bağlı APT paketi kurulamadı: $pkg"
+        ui_warn "İsteğe bağlı APT paketi kurulamadı: $pkg"
     fi
 done
 
@@ -372,7 +374,7 @@ ui_step "NVIDIA sürücüsü"
 
 if [[ "$FSKS_INSTALL_NVIDIA" == "1" ]] && lspci | grep -i "NVIDIA" >/dev/null; then
 
-    echo "✅ NVIDIA GPU tespit edildi."
+    ui_success "NVIDIA GPU tespit edildi."
     echo "NVIDIA sürücüsü kurulumu başlatılıyor..."
 
     $SUDO apt-get install -y \
@@ -412,18 +414,18 @@ if [[ "$FSKS_INSTALL_NVIDIA" == "1" ]] && lspci | grep -i "NVIDIA" >/dev/null; t
     uname -r
 
     if $SUDO modprobe nvidia 2>/dev/null; then
-        echo "✅ NVIDIA kernel modülü yüklendi."
+        ui_success "NVIDIA kernel modülü yüklendi."
     else
-        echo "⚠️ NVIDIA modülü henüz yüklenemedi; nouveau / Secure Boot / reboot durumunu kontrol et."
+        ui_warn "NVIDIA modülü henüz yüklenemedi; nouveau / Secure Boot / reboot durumunu kontrol et."
         if command -v mokutil >/dev/null && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
-            echo "⚠️ Secure Boot açık. DKMS modülü için imzalama / MOK kaydı gerekebilir."
+            ui_warn "Secure Boot açık. DKMS modülü için imzalama / MOK kaydı gerekebilir."
         fi
     fi
 
 else
 
-    echo "ℹ️ NVIDIA GPU tespit edilmedi."
-    echo "⏭️ NVIDIA sürücüsü kurulumu atlandı (GPU yok veya FSKS_INSTALL_NVIDIA=0)."
+    ui_info "NVIDIA GPU tespit edilmedi."
+    ui_info "NVIDIA sürücüsü kurulumu atlandı (GPU yok veya FSKS_INSTALL_NVIDIA=0)."
 
 fi
 
@@ -440,10 +442,10 @@ if [[ "$FSKS_CHANGE_SHELL" == "1" ]]; then
         $SUDO chsh -s "$FISH_PATH" "$TARGET_USER"
     fi
 else
-    echo "ℹ️ Varsayılan shell korunuyor (FSKS_CHANGE_SHELL=1 ile değiştirilir)."
+    ui_info "Varsayılan shell korunuyor (FSKS_CHANGE_SHELL=1 ile değiştirilir)."
 fi
 
-echo "✅ Starship APT üzerinden kuruldu; uzaktan script çalıştırılmıyor."
+ui_success "Starship APT üzerinden kuruldu; uzaktan script çalıştırılmıyor."
 
 # ============================================================
 # FLATPAK
@@ -468,11 +470,11 @@ if [[ "$FSKS_INSTALL_FLATPAKS" == "1" ]]; then
     )
     for app in "${OPTIONAL_FLATPAKS[@]}"; do
         if ! sudo flatpak install --noninteractive -y flathub "$app"; then
-            echo "⚠️ Flatpak kurulamadı: $app (diğer uygulamalara devam)."
+            ui_warn "Flatpak kurulamadı: $app (diğer uygulamalara devam)."
         fi
     done
 else
-    echo "ℹ️ Flatpak uygulamaları atlandı (FSKS_INSTALL_FLATPAKS=1)."
+    ui_info "Flatpak uygulamaları atlandı (FSKS_INSTALL_FLATPAKS=1)."
 fi
 
 # ============================================================
@@ -486,7 +488,7 @@ if [[ "$FSKS_WINETRICKS" == "1" ]]; then
     export WINEPREFIX="$HOME/.local/share/wineprefixes/fsks"
     winetricks -q dotnet48 vcrun2022 corefonts
 else
-    echo "ℹ️ Wine prefix'i korunuyor (FSKS_WINETRICKS=1 ile kurulum)."
+    ui_info "Wine prefix'i korunuyor (FSKS_WINETRICKS=1 ile kurulum)."
 fi
 
 # ============================================================
@@ -508,7 +510,7 @@ fi
 
 sudo systemctl enable zramswap
 if [[ "$ZRAM_CHANGED" == "1" ]] && swapon --noheadings --raw --output NAME | grep -q '^/dev/zram'; then
-    echo "⚠️ zRAM kullanımda: swapoff yapılmadı. Yeni yapılandırma reboot sonrası etkin."
+    ui_warn "zRAM kullanımda: swapoff yapılmadı. Yeni yapılandırma reboot sonrası etkin."
 elif ! systemctl is-active --quiet zramswap || [[ "$ZRAM_CHANGED" == "1" ]]; then
     sudo systemctl restart zramswap
 fi
@@ -543,7 +545,7 @@ ui_step "Fish yapılandırması"
 mkdir -p "$HOME/.config/fish"
 FISH_CONFIG="$HOME/.config/fish/config.fish"
 if [[ -f "$FISH_CONFIG" ]] && grep -Fq '# >>> FSKS >>>' "$FISH_CONFIG"; then
-    echo "✅ FSKS Fish bloğu zaten var."
+    ui_success "FSKS Fish bloğu zaten var."
 else
     if [[ -f "$FISH_CONFIG" ]]; then
         cp -a "$FISH_CONFIG" "$FISH_CONFIG.fsks.bak"
@@ -581,7 +583,7 @@ ui_step "Nerd Font"
 if [[ "$FSKS_INSTALL_FONT" == "1" ]]; then
     mkdir -p "$HOME/.local/share/fonts"
     if compgen -G "$HOME/.local/share/fonts/JetBrainsMonoNerdFont*.ttf" >/dev/null; then
-        echo "✅ JetBrainsMono Nerd Font zaten mevcut."
+        ui_success "JetBrainsMono Nerd Font zaten mevcut."
     else
         FONT_TMP="$(mktemp --suffix=.zip)"
         if curl --fail --location --silent --show-error --retry 3 \
@@ -591,12 +593,12 @@ if [[ "$FSKS_INSTALL_FONT" == "1" ]]; then
             unzip -oq "$FONT_TMP" -d "$HOME/.local/share/fonts"
             fc-cache -f
         else
-            echo "⚠️ Font indirilemedi / arşiv bozuk; kuruluma devam."
+            ui_warn "Font indirilemedi / arşiv bozuk; kuruluma devam."
         fi
         rm -f "$FONT_TMP"
     fi
 else
-    echo "ℹ️ Font kurulumu atlandı (FSKS_INSTALL_FONT=1 ile etkin)."
+    ui_info "Font kurulumu atlandı (FSKS_INSTALL_FONT=1 ile etkin)."
 fi
 
 # ============================================================
@@ -706,43 +708,23 @@ EOF
 fi
 
 # ============================================================
-# BİTİŞ
+# BİTİŞ / KURULUM ÖZETİ
 # ============================================================
 
-echo
-echo
-echo "========================================"
-echo "==              BİTTİ                  =="
-echo "========================================"
-echo
-echo "✅ Tüm ayarlar tamamlandı."
-echo
-echo "Kernel:"
-uname -r
-
-echo
-echo "NVIDIA:"
+ui_success "Kurulum adımları tamamlandı."
 if lspci | grep -i "NVIDIA" >/dev/null; then
-    nvidia-smi 2>/dev/null || echo "⚠️ NVIDIA GPU algılandı ancak nvidia-smi çalışmıyor."
+    if nvidia-smi >/dev/null 2>&1; then
+        ui_success "NVIDIA sürücüsü yanıt veriyor."
+    else
+        ui_warn "NVIDIA algılandı; sürücü etkinliğini reboot sonrası nvidia-smi ile kontrol et."
+    fi
 else
-    echo "NVIDIA GPU bulunmadı."
+    ui_info "NVIDIA GPU bulunmadı."
 fi
-
-echo
-echo "GRUB:"
-grep '^GRUB_TIMEOUT=' /etc/default/grub || true
-grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub || true
-
-echo
-echo "========================================"
-echo "==        HER ŞEY TAMAMLANDI          =="
-echo "========================================"
-echo
-echo "Çıkmak için herhangi bir tuşa basın..."
-
-if [ -t 0 ]; then
-    read -n 1 -s -r
-    echo
+if [[ "$FSKS_CHANGE_SHELL" == "1" ]]; then
+    ui_info "Yeni Fish oturumu için çıkış yapıp tekrar giriş yapabilirsin."
 fi
-
+ui_info "Güncel kernel: $(uname -r)"
+ui_info "zRAM durumu: swapon --show && zramctl"
+ui_finish
 exit 0
