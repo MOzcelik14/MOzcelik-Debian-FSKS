@@ -258,7 +258,7 @@ echo "=============================="
 # NVIDIA DONANIM KONTROLÜ
 # ============================================================
 
-if [[ "$FSKS_INSTALL_NVIDIA" == "1" ]] && lspci | grep -qi "NVIDIA"; then
+if [[ "$FSKS_INSTALL_NVIDIA" == "1" ]] && lspci | grep -i "NVIDIA" >/dev/null; then
 
     echo "✅ NVIDIA GPU tespit edildi."
     echo "NVIDIA sürücüsü kurulumu başlatılıyor..."
@@ -386,15 +386,20 @@ echo "=============================="
 
 $SUDO apt install -y zram-tools
 
-backup_once /etc/default/zramswap
-$SUDO tee /etc/default/zramswap >/dev/null <<EOF
-ALGO=zstd
-PERCENT=50
-PRIORITY=100
-EOF
+ZRAM_CONFIG="$(printf 'ALGO=zstd\nPERCENT=50\nPRIORITY=100\n')"
+ZRAM_CHANGED=0
+if [[ ! -f /etc/default/zramswap ]] || [[ "$(cat /etc/default/zramswap)" != "$ZRAM_CONFIG" ]]; then
+    backup_once /etc/default/zramswap
+    printf '%s\n' "$ZRAM_CONFIG" | sudo tee /etc/default/zramswap >/dev/null
+    ZRAM_CHANGED=1
+fi
 
-$SUDO systemctl enable zramswap
-$SUDO systemctl restart zramswap
+sudo systemctl enable zramswap
+if [[ "$ZRAM_CHANGED" == "1" ]] && swapon --noheadings --raw --output NAME | grep -q '^/dev/zram'; then
+    echo "⚠️ zRAM kullanımda: swapoff yapılmadı. Yeni yapılandırma reboot sonrası etkin."
+elif ! systemctl is-active --quiet zramswap || [[ "$ZRAM_CHANGED" == "1" ]]; then
+    sudo systemctl restart zramswap
+fi
 
 echo "vm.swappiness=$FSKS_SWAPPINESS" |
     $SUDO tee /etc/sysctl.d/99-swappiness.conf >/dev/null
@@ -603,7 +608,7 @@ uname -r
 
 echo
 echo "NVIDIA:"
-if lspci | grep -qi "NVIDIA"; then
+if lspci | grep -i "NVIDIA" >/dev/null; then
     nvidia-smi 2>/dev/null || echo "⚠️ NVIDIA GPU algılandı ancak nvidia-smi çalışmıyor."
 else
     echo "NVIDIA GPU bulunmadı."
